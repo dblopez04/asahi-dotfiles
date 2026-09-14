@@ -17,7 +17,8 @@ include ~/.cache/wal/colors-sway
 set $mod Mod4
 set $terminal kitty
 set $fileManager nautilus
-set $menu fuzzel
+# sway gives apps a PATH without ~/.local/bin, so add it for everything the launcher starts
+set $menu env PATH="$HOME/.local/bin:$PATH" fuzzel
 set $screenshot XDG_SCREENSHOTS_DIR=$HOME/Screenshots grimshot --notify savecopy
 set $lock swaylock -f
 
@@ -37,6 +38,8 @@ output * bg ~/wallpapers/homer_on_the_trail.jpg fill
 exec /usr/libexec/polkit-mate-authentication-agent-1
 exec swaync
 exec swayosd-server
+# split new windows along the focused window's longer side (1 | top/bottom instead of 1 | 1 | 1)
+exec ~/.local/bin/autotiling
 
 # lock after 5 minutes idle, screen off 30 seconds later, suspend after 30 minutes
 exec swayidle -w \
@@ -101,14 +104,22 @@ bindsym $mod+v exec ~/.local/bin/mac-clipboard.sh v
 bindsym $mod+a exec ~/.local/bin/mac-clipboard.sh a
 
 bindsym $mod+q exec $terminal
-bindsym $mod+w kill
+bindsym --no-repeat $mod+w exec ~/.local/bin/close-window.py
 bindsym $mod+m exit
 bindsym $mod+e exec $fileManager
 bindsym $mod+Shift+v floating toggle
 bindsym $mod+r exec $menu
 bindsym $mod+n exec swaync-client -t -sw
+# settings popup, like Cmd+, on macOS (press again to close)
+bindsym $mod+comma exec ~/.local/bin/settings-panel.py
+# wallpaper grid (~/wallpapers and the dharmx/walls gallery), re-themes with wal.sh (press again to close)
+bindsym $mod+p exec ~/.local/bin/wallpaper-picker.py
 bindsym $mod+j layout toggle split
 bindsym $mod+f exec firefox
+# calculator and Markdown writer, on Omarchy's keys
+bindsym $mod+Ctrl+q exec ~/.local/bin/walcalc
+bindsym XF86Calculator exec ~/.local/bin/walcalc
+bindsym $mod+Shift+w exec ~/.local/bin/walwrite
 bindsym $mod+g fullscreen
 bindsym $mod+Shift+c reload
 
@@ -194,6 +205,8 @@ for_window [title="^Rename .+"] floating enable
 for_window [app_id="org.kde.ark"] floating enable
 for_window [app_id="org.pulseaudio.pavucontrol"] floating enable, resize set 900 560
 for_window [class="feh"] floating enable, resize set 80 ppt 80 ppt, move position center
+for_window [app_id="walcalc"] floating enable
+for_window [app_id="walwrite"] floating enable
 
 ###########
 ### BAR ###
