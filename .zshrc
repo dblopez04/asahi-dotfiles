@@ -74,3 +74,6 @@ mkcd() { mkdir -p "$1" && cd "$1" }
 # ---------- Sources ----------
 [[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
 [ -f ~/fzfrc ] && source ~/fzfrc
+
+# opencode
+export PATH=/home/daniel/.opencode/bin:$PATH
