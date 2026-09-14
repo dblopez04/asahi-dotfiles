@@ -1,0 +1,68 @@
+{{
+	"reload_style_on_change": true,
+	"layer": "top",
+	"position": "top",
+	"height": 30,
+	"spacing": 0,
+	"modules-left": [
+		"sway/workspaces",
+		"mpris",
+		"sway/mode"
+	],
+	"modules-center": [
+		"custom/clock"
+	],
+	"modules-right": [
+		"pulseaudio",
+		"battery",
+		"backlight",
+		"custom/power"
+	],
+	"sway/workspaces": {{
+		"disable-scroll": true,
+		"format": "{{icon}}{{name}}",
+		"format-icons": {{
+			"default": " ",
+			"urgent": "!",
+			"focused": "*"
+		}}
+	}},
+	"mpris": {{
+		"format": "<span color='{color0.lighten(10%)}'>[ </span><span color='{color2}'><b>music:</b></span> {{artist}} - {{title}}<span color='{color0.lighten(10%)}'> ]</span>",
+		"format-paused": "<span color='{color0.lighten(10%)}'>[ </span><span color='{color2}'><b>paused:</b></span> {{artist}} - {{title}}<span color='{color0.lighten(10%)}'> ]</span>",
+		"artist-len": 12,
+		"title-len": 15
+	}},
+	"sway/mode": {{
+		"format": "{{}}"
+	}},
+	"custom/clock": {{
+		"format": "<span color='{color0.lighten(10%)}'>[ </span>{{}}<span color='{color0.lighten(10%)}'> ]</span>",
+		"exec": "date +'%I:%M %p %A, %b %d' | tr '[:upper:]' '[:lower:]'",
+		"interval": 3,
+		"tooltip": false
+	}},
+	"pulseaudio": {{
+		"format": "<span color='{color0.lighten(10%)}'>[ </span><span color='{color2}'><b>vol:</b></span> {{volume}}%<span color='{color0.lighten(10%)}'> / </span>",
+		"format-muted": "<span color='{color0.lighten(10%)}'>[ </span><span color='{color2}'><b>vol:</b></span> muted<span color='{color0.lighten(10%)}'> / </span>",
+		"on-click": "pavucontrol",
+		"on-click-right": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
+		"tooltip": false
+	}},
+	"battery": {{
+		"format": "<span color='{color2}'><b>bat:</b></span> {{capacity}}%",
+		"format-charging": "<span color='{color2}'><b>ac:</b></span> {{capacity}}%",
+		"format-plugged": "<span color='{color2}'><b>ac:</b></span> {{capacity}}%",
+		"tooltip": false,
+		"interval": 20
+	}},
+	"backlight": {{
+		"format": "<span color='{color0.lighten(10%)}'> / </span><span color='{color2}'><b>bri:</b></span> {{percent}}%<span color='{color0.lighten(10%)}'> ]</span>",
+		"tooltip": false
+	}},
+	"custom/power": {{
+		"format": "",
+		"tooltip": false,
+		"on-click": "~/.local/bin/power-menu.sh"
+	}}
+}}

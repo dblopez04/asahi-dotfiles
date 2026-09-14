@@ -1,0 +1,60 @@
+{
+    "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+    // fastfetch's built-in small Fedora text logo
+    "logo": {
+        "source": "fedora_small",
+        "padding": {
+            "top": 1,
+            "left": 2,
+            "right": 3
+        }
+    },
+    "display": {
+        "separator": "  ",
+        "key": {
+            "width": 8
+        },
+        // ANSI green = pywal color2, same accent as the bar labels
+        "color": {
+            "keys": "green"
+        }
+    },
+    "modules": [
+        {
+            "type": "os",
+            "key": "distro",
+            "format": "{name} {version-id}"
+        },
+        {
+            "type": "kernel",
+            "key": "kernel",
+            "format": "{release}"
+        },
+        {
+            "type": "uptime",
+            "key": "uptime"
+        },
+        {
+            "type": "shell",
+            "key": "shell"
+        },
+        {
+            "type": "terminal",
+            "key": "term"
+        },
+        {
+            "type": "cpu",
+            "key": "cpu",
+            "format": "{name}"
+        },
+        {
+            "type": "memory",
+            "key": "memory"
+        },
+        "break",
+        {
+            "type": "colors",
+            "symbol": "circle"
+        }
+    ]
+}

@@ -1,0 +1,10 @@
+# stow's defaults
+\.git
+\.gitignore
+\.gitmodules
+^/README.*
+^/LICENSE.*
+^/COPYING
+^/\.stow-local-ignore
+# scripts are linked into ~/.local/bin by scripts/install.sh
+^/scripts

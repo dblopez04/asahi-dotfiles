@@ -1,0 +1,6 @@
+# Regenerated from the pywal colors by wal.sh (and install.sh) on every theme change
+.config/gtk-4.0/gtk.css
+.config/gtk-4.0/gtk-dark.css
+
+# Neovim help index, rebuilt automatically
+.config/nvim/doc/tags

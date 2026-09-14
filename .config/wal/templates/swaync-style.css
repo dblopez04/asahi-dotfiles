@@ -1,0 +1,34 @@
+/* Notifications colored by pywal; rendered to ~/.cache/wal/swaync-style.css */
+@import url("file:///etc/xdg/swaync/style.css");
+
+:root {{
+  --cc-bg: {background};
+  --noti-border-color: {color0.lighten(15%)};
+  --noti-bg: {background.rgb};
+  --noti-bg-alpha: 1;
+  --noti-bg-darker: {color0.lighten(5%)};
+  --noti-bg-hover: {color0.lighten(10%)};
+  --noti-bg-focus: {color0.lighten(10%)};
+  --noti-close-bg: {color0.lighten(10%)};
+  --noti-close-bg-hover: {color0.lighten(20%)};
+  --text-color: {foreground};
+  --text-color-disabled: {color8};
+  --bg-selected: {color2};
+  --border-radius: 0;
+  --notification-shadow: none;
+  --font-size-body: 14px;
+  --font-size-summary: 15px;
+}}
+
+* {{
+  font-family: "BlexMono Nerd Font", monospace;
+}}
+
+.close-button,
+.notification-row .notification-background .notification .notification-default-action .notification-content .image {{
+  border-radius: 0;
+}}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content .text-box .summary {{
+  color: {color2};
+}}

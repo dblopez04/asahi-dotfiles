@@ -1,0 +1,25 @@
+/* Volume/brightness popup: SwayOSD's default style, recolored by pywal.
+   (A full custom stylesheet hid the brightness icon; overriding the default keeps it.) */
+@import url("file:///etc/xdg/swayosd/style.css");
+@import url("file:///home/daniel/.cache/wal/colors-waybar.css");
+
+window#osd {
+  border-radius: 16px;
+  border: 1px solid alpha(@color4, 0.6);
+  background: alpha(@background, 0.85);
+}
+
+window#osd image,
+window#osd label {
+  color: @foreground;
+}
+
+window#osd trough,
+window#osd segment {
+  background: alpha(@foreground, 0.2);
+}
+
+window#osd progress,
+window#osd segment.active {
+  background: @color2;
+}

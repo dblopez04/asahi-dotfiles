@@ -1,0 +1,5 @@
+#!/bin/sh
+# Minimal oomox-cli: builds ~/.themes/oomox-<preset name> from an oomox preset
+# (e.g. ~/.cache/wal/colors-oomox -> ~/.themes/oomox-colors-oomox)
+preset=$1
+exec ~/.local/share/oomox-gtk-theme/change_color.sh -o "oomox-$(basename "$preset")" "$preset"

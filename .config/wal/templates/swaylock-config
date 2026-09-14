@@ -1,0 +1,32 @@
+# Minimal lock screen colored by pywal; rendered to ~/.cache/wal/swaylock-config
+color={background.strip}
+font=BlexMono Nerd Font
+show-failed-attempts
+ignore-empty-password
+indicator-idle-visible
+
+indicator-radius=60
+indicator-thickness=2
+
+inside-color=00000000
+inside-clear-color=00000000
+inside-ver-color=00000000
+inside-wrong-color=00000000
+
+ring-color={color0.lighten(15%).strip}
+ring-clear-color={foreground.strip}
+ring-ver-color={color2.strip}
+ring-wrong-color={color1.strip}
+key-hl-color={color2.strip}
+bs-hl-color={color1.strip}
+
+line-color=00000000
+line-clear-color=00000000
+line-ver-color=00000000
+line-wrong-color=00000000
+separator-color=00000000
+
+text-color=00000000
+text-clear-color={foreground.strip}
+text-ver-color={foreground.strip}
+text-wrong-color={color1.strip}
