@@ -33,7 +33,7 @@ PACKAGES=(
     sway swaybg swayidle swaylock waybar SwayNotificationCenter swayosd fuzzel
     xdg-desktop-portal-wlr mate-polkit greetd tuigreet
     # used by keybindings and scripts
-    grim slurp grimshot wl-clipboard wtype jq brightnessctl playerctl pavucontrol
+    grim slurp grimshot wl-clipboard wtype jq brightnessctl playerctl pavucontrol pulseaudio-utils libnotify
     # apps
     kitty nautilus firefox code neovim vim-enhanced feh mpv libreoffice flatpak
     # shell and terminal tools
@@ -46,6 +46,8 @@ PACKAGES=(
     google-noto-fonts-common google-noto-emoji-fonts
     # theming: pywal and the oomox GTK theme builder
     ImageMagick pipx sassc librsvg2-tools gdk-pixbuf2-devel glib2-devel bc glib2 elementary-icon-theme
+    # walcalc and walwrite
+    python3-gobject gtk4
     # this script
     stow git curl tar xz
 )
@@ -73,7 +75,7 @@ gpgkey=https://packages.microsoft.com/keys/microsoft.asc'
 
     step "Setting up Flathub and installing Flatpak apps"
     sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-    sudo flatpak install -y --noninteractive flathub org.localsend.localsend_app com.github.PintaProject.Pinta
+    sudo flatpak install -y --noninteractive flathub org.localsend.localsend_app com.github.PintaProject.Pinta org.gnome.gitlab.YaLTeR.VideoTrimmer
 
     step "Opening the LocalSend port in the firewall"
     if firewall-cmd --state >/dev/null 2>&1; then
@@ -81,6 +83,11 @@ gpgkey=https://packages.microsoft.com/keys/microsoft.asc'
         sudo firewall-cmd -q --reload
     else
         echo "firewalld is not running, skipping"
+    fi
+
+    step "Installing Tailscale"
+    if ! command -v tailscale >/dev/null; then
+        curl -fsSL https://tailscale.com/install.sh | sh
     fi
 fi
 
@@ -92,9 +99,19 @@ if [ ! -d "$font_dir" ]; then
     fc-cache -f "$HOME/.local/share/fonts" >/dev/null
 fi
 
-step "Installing pywal and pywalfox"
+step "Installing the Rosé Pine cursors"
+icons_dir="$HOME/.local/share/icons"
+# a real directory, so stow only links icons/default into it (older setups had it folded into the repo)
+[ -L "$icons_dir" ] && rm "$icons_dir"
+mkdir -p "$icons_dir"
+for theme in BreezeX-RosePine-Linux BreezeX-RosePineDawn-Linux; do
+    [ -d "$icons_dir/$theme" ] || curl -fsSL "$(github_asset_url rose-pine/cursors "$theme.tar.xz")" | tar -xJ -C "$icons_dir"
+done
+
+step "Installing pywal, pywalfox, and autotiling"
 pipx list --short 2>/dev/null | grep -q '^pywal16 ' || pipx install pywal16
 pipx list --short 2>/dev/null | grep -q '^pywalfox ' || pipx install pywalfox
+pipx list --short 2>/dev/null | grep -q '^autotiling ' || pipx install autotiling
 pywalfox install >/dev/null
 
 step "Installing oh-my-zsh, powerlevel10k, and the oomox theme builder"
@@ -124,9 +141,16 @@ if ! command -v codex >/dev/null; then
     rm -rf "$tmp"
 fi
 
+step "Installing opencode"
+# link it into ~/.local/bin instead of letting the installer add ~/.opencode/bin to .zshrc
+if [ ! -x "$HOME/.opencode/bin/opencode" ]; then
+    curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path
+fi
+ln -sfn "$HOME/.opencode/bin/opencode" "$HOME/.local/bin/opencode"
+
 step "Linking dotfiles"
 # create parents so stow links individual entries inside them instead of the whole directory
-mkdir -p "$HOME/.config" "$HOME/.local/share"
+mkdir -p "$HOME/.config" "$HOME/.local/share" "$HOME/.local/share/applications"
 (cd "$DOTFILES" && stow --restow .)
 
 step "Linking scripts into ~/.local/bin"
@@ -135,6 +159,9 @@ for script in "$DOTFILES"/scripts/*; do
     [ "$name" = install.sh ] && continue
     ln -sfn "$script" "$HOME/.local/bin/$name"
 done
+
+step "Setting feh as the default image viewer"
+python3 "$DOTFILES/scripts/image-defaults.py"
 
 step "Generating colors from $(basename "$WALLPAPER")"
 gsettings set org.gnome.desktop.interface cursor-theme 'BreezeX-RosePine-Linux'
@@ -203,7 +230,8 @@ step "Done"
 cat <<'EOF'
 Next:
   - reboot (or log out and back in) to start sway with everything
-  - sign in: run `claude` and `codex` once each
+  - sign in: run `claude`, `codex`, and `opencode` once each
+  - connect to your tailnet: sudo tailscale up
   - add the Pywalfox extension in Firefox, then run: pywalfox update
   - change the theme any time with: wal.sh /path/to/image
 EOF
