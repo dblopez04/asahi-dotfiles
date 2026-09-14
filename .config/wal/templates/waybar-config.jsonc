@@ -6,17 +6,21 @@
 	"spacing": 0,
 	"modules-left": [
 		"sway/workspaces",
-		"mpris",
 		"sway/mode"
 	],
 	"modules-center": [
-		"custom/clock"
+		"custom/clock",
+		"idle_inhibitor",
+		"custom/notification"
 	],
 	"modules-right": [
-		"pulseaudio",
-		"battery",
-		"backlight",
-		"custom/power"
+		"group/tray-expander",
+		"custom/agents",
+		"bluetooth",
+		"network",
+		"custom/tailscale",
+		"custom/audio",
+		"custom/battery"
 	],
 	"sway/workspaces": {{
 		"disable-scroll": true,
@@ -27,46 +31,110 @@
 			"focused": "*"
 		}}
 	}},
-	"mpris": {{
-		"format": "<span color='{color0.lighten(10%)}'>[ </span><span color='{color2}'><b>music:</b></span> {{artist}} - {{title}}<span color='{color0.lighten(10%)}'> ]</span>",
-		"format-paused": "<span color='{color0.lighten(10%)}'>[ </span><span color='{color2}'><b>paused:</b></span> {{artist}} - {{title}}<span color='{color0.lighten(10%)}'> ]</span>",
-		"artist-len": 12,
-		"title-len": 15
-	}},
 	"sway/mode": {{
 		"format": "{{}}"
 	}},
 	"custom/clock": {{
-		"format": "<span color='{color0.lighten(10%)}'>[ </span>{{}}<span color='{color0.lighten(10%)}'> ]</span>",
+		"format": "{{}}",
 		"exec": "date +'%I:%M %p %A, %b %d' | tr '[:upper:]' '[:lower:]'",
 		"interval": 3,
 		"on-click": "swaync-client -t -sw",
 		"tooltip": false
 	}},
-	"pulseaudio": {{
-		"format": "<span color='{color0.lighten(10%)}'>[ </span><span color='{color2}'><b>vol:</b></span> {{volume}}%<span color='{color0.lighten(10%)}'> / </span>",
-		"format-muted": "<span color='{color0.lighten(10%)}'>[ </span><span color='{color2}'><b>vol:</b></span> muted<span color='{color0.lighten(10%)}'> / </span>",
-		"on-click": "pavucontrol",
-		"on-click-right": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
-		"tooltip": false
+	"idle_inhibitor": {{
+		"format": "{{icon}}",
+		"format-icons": {{
+			"activated": "",
+			"deactivated": ""
+		}},
+		"tooltip-format-activated": "staying awake",
+		"tooltip-format-deactivated": ""
 	}},
-	"battery": {{
-		"format": "<span color='{color2}'><b>bat:</b></span> {{capacity}}%",
-		"format-charging": "<span color='{color2}'><b>ac:</b></span> {{capacity}}%",
-		"format-plugged": "<span color='{color2}'><b>ac:</b></span> {{capacity}}%",
-		"format-time": "{{H}}h {{M}}m",
-		"tooltip-format": "{{power:.1f}} W",
-		"tooltip-format-discharging": "{{time}} left ({{power:.1f}} W)",
-		"tooltip-format-charging": "{{time}} until full ({{power:.1f}} W)",
-		"interval": 20
-	}},
-	"backlight": {{
-		"format": "<span color='{color0.lighten(10%)}'> / </span><span color='{color2}'><b>bri:</b></span> {{percent}}%<span color='{color0.lighten(10%)}'> ]</span>",
-		"tooltip": false
-	}},
-	"custom/power": {{
-		"format": "",
+	"custom/notification": {{
+		"exec": "swaync-client -swb",
+		"return-type": "json",
+		"format": "{{icon}}",
+		"format-icons": {{
+			"notification": "",
+			"none": "",
+			"inhibited-notification": "",
+			"inhibited-none": "",
+			"dnd-notification": "󰂛",
+			"dnd-none": "󰂛",
+			"dnd-inhibited-notification": "󰂛",
+			"dnd-inhibited-none": "󰂛"
+		}},
 		"tooltip": false,
-		"on-click": "~/.local/bin/power-menu.sh"
+		"on-click": "swaync-client -d -sw"
+	}},
+	"group/tray-expander": {{
+		"orientation": "inherit",
+		"drawer": {{
+			"transition-duration": 600,
+			"children-class": "tray-group-item"
+		}},
+		"modules": ["custom/expand-icon", "tray"]
+	}},
+	"custom/expand-icon": {{
+		"format": "",
+		"tooltip": false
+	}},
+	"tray": {{
+		"icon-size": 15,
+		"spacing": 17
+	}},
+	"bluetooth": {{
+		"format": "",
+		"format-off": "󰂲",
+		"format-disabled": "󰂲",
+		"format-connected": "󰂱",
+		"format-no-controller": "",
+		"tooltip-format": "devices connected: {{num_connections}}",
+		"on-click": "~/.local/bin/bluetooth-menu.sh"
+	}},
+	"network": {{
+		"format": "{{icon}}",
+		"format-wifi": "{{icon}}",
+		"format-icons": ["󰤯", "󰤟", "󰤢", "󰤥", "󰤨"],
+		"format-ethernet": "󰀂",
+		"format-disconnected": "󰤮",
+		"tooltip-format-wifi": "{{essid}} ({{signalStrength}}%)",
+		"tooltip-format-ethernet": "connected",
+		"tooltip-format-disconnected": "disconnected",
+		"interval": 3,
+		"on-click": "~/.local/bin/network-menu.sh"
+	}},
+	"custom/agents": {{
+		"exec": "~/.local/bin/agent-usage.py bar",
+		"return-type": "json",
+		"interval": 30,
+		"signal": 12,
+		"on-click": "~/.local/bin/agent-usage.py menu",
+		"on-click-right": "~/.local/bin/agent-usage.py refresh"
+	}},
+	"custom/tailscale": {{
+		"exec": "~/.local/bin/tailscale-status.sh",
+		"return-type": "json",
+		"interval": 5,
+		"signal": 11,
+		"on-click": "~/.local/bin/tailscale-menu.sh"
+	}},
+	"custom/audio": {{
+		"exec": "~/.local/bin/audio-status.py",
+		"return-type": "json",
+		"restart-interval": 2,
+		"on-scroll-up": "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+",
+		"on-scroll-down": "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-",
+		"on-click": "~/.local/bin/audio-menu.sh",
+		"on-click-right": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
+		"on-click-middle": "pavucontrol"
+	}},
+	"custom/battery": {{
+		"exec": "~/.local/bin/battery-status.py",
+		"return-type": "json",
+		"interval": 20,
+		"signal": 13,
+		"on-click": "~/.local/bin/power-menu.sh",
+		"on-click-right": "~/.local/bin/battery-status.py toggle"
 	}}
 }}

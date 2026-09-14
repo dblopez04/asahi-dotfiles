@@ -1,6 +1,5 @@
 @import url("colors.css");
 
-/* Layout based on github.com/jaimecabrito01/my-dotfiles, colors from pywal */
 @define-color accent @color2;
 @define-color fg @foreground;
 @define-color bg @background;
@@ -22,22 +21,15 @@ window#waybar {
 	border-bottom: 1px solid @bg-alt;
 }
 
-#mpris {
-	color: @fg;
-	margin-left: 10px;
+tooltip {
+	background-color: @bg;
+	border: 1px solid @bg-alt;
 }
 
 #mode {
 	font-weight: bold;
 	color: @accent;
 	margin-left: 10px;
-}
-
-#language,
-#battery,
-#backlight,
-#custom-clock {
-	color: @fg;
 }
 
 #workspaces {
@@ -66,8 +58,61 @@ window#waybar {
 	color: @color3;
 }
 
-
-#custom-power {
+#custom-clock {
 	color: @fg;
-	padding: 0 12px 0 8px;
+}
+
+/* icons: the Propo variant gives each glyph its real width, so they aren't clipped and gaps stay even */
+#idle_inhibitor,
+#custom-notification,
+#custom-expand-icon,
+#custom-agents,
+#tray,
+#bluetooth,
+#network,
+#custom-tailscale,
+#custom-audio,
+#custom-battery {
+	font-family: "BlexMono Nerd Font Propo", monospace;
+	color: @fg;
+}
+
+/* status indicators only take space while their mode is on */
+#idle_inhibitor.activated,
+#custom-notification.dnd-notification,
+#custom-notification.dnd-none,
+#custom-notification.dnd-inhibited-notification,
+#custom-notification.dnd-inhibited-none {
+	color: @accent;
+	margin-left: 10px;
+}
+
+.modules-right {
+	margin-right: 10px;
+}
+
+#custom-expand-icon,
+#custom-agents,
+#tray,
+#bluetooth,
+#network,
+#custom-tailscale,
+#custom-audio,
+#custom-battery {
+	margin: 0 10px;
+}
+
+#bluetooth.off,
+#bluetooth.disabled,
+#network.disconnected,
+#custom-tailscale.disconnected {
+	opacity: 0.5;
+}
+
+#custom-battery.warning {
+	color: @color3;
+}
+
+#custom-battery.critical:not(.charging) {
+	color: @color1;
 }
