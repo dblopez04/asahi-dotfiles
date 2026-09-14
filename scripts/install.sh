@@ -35,7 +35,7 @@ PACKAGES=(
     # used by keybindings and scripts
     grim slurp grimshot wl-clipboard wtype jq brightnessctl playerctl pavucontrol
     # apps
-    kitty nautilus firefox code neovim vim-enhanced
+    kitty nautilus firefox code neovim vim-enhanced feh
     # shell and terminal tools
     zsh fzf eza zoxide fastfetch tmux ripgrep fd-find bat btop tree powertop
     # development
