@@ -106,6 +106,7 @@ bindsym $mod+m exit
 bindsym $mod+e exec $fileManager
 bindsym $mod+Shift+v floating toggle
 bindsym $mod+r exec $menu
+bindsym $mod+n exec swaync-client -t -sw
 bindsym $mod+j layout toggle split
 bindsym $mod+f exec firefox
 bindsym $mod+g fullscreen

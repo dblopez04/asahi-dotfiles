@@ -35,7 +35,7 @@ PACKAGES=(
     # used by keybindings and scripts
     grim slurp grimshot wl-clipboard wtype jq brightnessctl playerctl pavucontrol
     # apps
-    kitty nautilus firefox code neovim vim-enhanced feh
+    kitty nautilus firefox code neovim vim-enhanced feh mpv libreoffice flatpak
     # shell and terminal tools
     zsh fzf eza zoxide fastfetch tmux ripgrep fd-find bat btop tree powertop
     # development
@@ -70,6 +70,18 @@ gpgkey=https://packages.microsoft.com/keys/microsoft.asc'
     step "Installing packages"
     sudo dnf -y group install development-tools
     sudo dnf -y install "${PACKAGES[@]}"
+
+    step "Setting up Flathub and installing Flatpak apps"
+    sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+    sudo flatpak install -y --noninteractive flathub org.localsend.localsend_app com.github.PintaProject.Pinta
+
+    step "Opening the LocalSend port in the firewall"
+    if firewall-cmd --state >/dev/null 2>&1; then
+        sudo firewall-cmd -q --permanent --add-port=53317/tcp --add-port=53317/udp
+        sudo firewall-cmd -q --reload
+    else
+        echo "firewalld is not running, skipping"
+    fi
 fi
 
 step "Installing BlexMono Nerd Font"
