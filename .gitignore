@@ -4,3 +4,5 @@
 
 # Neovim help index, rebuilt automatically
 .config/nvim/doc/tags
+
+scripts/__pycache__/
