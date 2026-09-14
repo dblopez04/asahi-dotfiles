@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Walcalc
+GenericName=Calculator
+Comment=Dead-simple calculator in the pywal colors
+Exec=walcalc
+Icon=accessories-calculator
+Terminal=false
+Categories=Utility;Calculator;
+Keywords=calculator;calc;math;
+StartupWMClass=walcalc
