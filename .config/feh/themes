@@ -1,0 +1,2 @@
+# the "feh" theme is applied by default: shrink images that are larger than the window
+feh --scale-down --image-bg black

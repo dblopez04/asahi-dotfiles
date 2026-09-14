@@ -192,7 +192,7 @@ bindsym --locked XF86AudioPrev exec playerctl previous
 for_window [title="^Rename .+"] floating enable
 for_window [app_id="org.kde.ark"] floating enable
 for_window [app_id="org.pulseaudio.pavucontrol"] floating enable, resize set 900 560
-for_window [class="feh"] floating enable
+for_window [class="feh"] floating enable, resize set 80 ppt 80 ppt, move position center
 
 ###########
 ### BAR ###
