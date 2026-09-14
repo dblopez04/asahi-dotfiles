@@ -38,11 +38,11 @@ exec /usr/libexec/polkit-mate-authentication-agent-1
 exec swaync
 exec swayosd-server
 
-# hypridle equivalent: lock, screen off, and suspend after 80 minutes
+# lock after 5 minutes idle, screen off 30 seconds later, suspend after 30 minutes
 exec swayidle -w \
-    timeout 4800 'swaylock -f' \
-    timeout 4800 'swaymsg "output * power off"' resume 'swaymsg "output * power on"' \
-    timeout 4800 'systemctl suspend' \
+    timeout 300 'swaylock -f' \
+    timeout 330 'swaymsg "output * power off"' resume 'swaymsg "output * power on"' \
+    timeout 1800 'systemctl suspend' \
     before-sleep 'swaylock -f' \
     after-resume 'swaymsg "output * power on"' \
     lock 'swaylock -f'

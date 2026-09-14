@@ -53,7 +53,10 @@
 		"format": "<span color='{color2}'><b>bat:</b></span> {{capacity}}%",
 		"format-charging": "<span color='{color2}'><b>ac:</b></span> {{capacity}}%",
 		"format-plugged": "<span color='{color2}'><b>ac:</b></span> {{capacity}}%",
-		"tooltip": false,
+		"format-time": "{{H}}h {{M}}m",
+		"tooltip-format": "{{power:.1f}} W",
+		"tooltip-format-discharging": "{{time}} left ({{power:.1f}} W)",
+		"tooltip-format-charging": "{{time}} until full ({{power:.1f}} W)",
 		"interval": 20
 	}},
 	"backlight": {{
