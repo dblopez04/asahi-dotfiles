@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Wallpaper Picker
+Comment=Pick a wallpaper and theme the desktop from it
+Exec=wallpaper-picker.py
+Icon=preferences-desktop-wallpaper
+Terminal=false
+Categories=Settings;DesktopSettings;
+Keywords=wallpaper;background;theme;colors;pywal;

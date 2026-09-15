@@ -1,12 +1,12 @@
 [Desktop Entry]
 Type=Application
 Name=Walwrite
-GenericName=Markdown Writer
-Comment=Dead-simple Markdown writing app in the pywal colors
-Exec=walwrite %f
+GenericName=Markdown Editor
+Comment=Simple Markdown and text editor in the pywal colors
+Exec=walwrite %F
 Icon=accessories-text-editor
 Terminal=false
-Categories=Office;WordProcessor;TextEditor;
-MimeType=text/markdown;text/x-markdown;
+Categories=Office;TextEditor;
+MimeType=text/markdown;text/x-markdown;text/plain;
 Keywords=markdown;write;notes;text;editor;
-StartupWMClass=walwrite
+StartupWMClass=dev.dotfiles.walwrite

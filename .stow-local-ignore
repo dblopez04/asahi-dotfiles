@@ -8,3 +8,5 @@
 ^/\.stow-local-ignore
 # scripts are linked into ~/.local/bin by scripts/install.sh
 ^/scripts
+# config backups made by the settings panel
+^/backups

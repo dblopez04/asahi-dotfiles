@@ -1,0 +1,13 @@
+#!/bin/sh
+# Starts sway with the session environment every app launched from it should see.
+# greetd runs this instead of sway directly (see install.sh).
+
+# Qt apps follow the GTK (pywal/oomox) theme
+export QT_QPA_PLATFORMTHEME=gtk3
+# Electron and Chromium apps run as native Wayland windows, sharp at fractional scales
+export ELECTRON_OZONE_PLATFORM_HINT=auto
+export MOZ_ENABLE_WAYLAND=1
+# scripts in ~/.local/bin are available to everything sway starts
+export PATH="$HOME/.local/bin:$PATH"
+
+exec sway "$@"

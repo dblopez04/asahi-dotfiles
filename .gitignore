@@ -5,4 +5,16 @@
 # Neovim help index, rebuilt automatically
 .config/nvim/doc/tags
 
-scripts/__pycache__/
+# Python bytecode (scripts/, scripts/settings_pages/)
+__pycache__/
+*.pyc
+
+# Config backups and unsaved changes from the settings panel
+backups/
+.config/sway/settings.conf
+# temp files dotconfig.py writes then renames (only left behind if it's killed mid-write)
+.config/sway/.check-*
+.settings-*
+
+# Local Claude Code settings (also in the global git ignore on this machine)
+.claude/settings.local.json

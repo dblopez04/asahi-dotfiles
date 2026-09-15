@@ -28,8 +28,8 @@ set $lock swaylock -f
 
 # 1536x960 logical. Closest to macOS "looks like 1440x900" that divides the
 # 2560x1600 panel evenly; 1.775 left the bottom pixel row undrawn (glitchy line).
-output eDP-1 scale 1.666667
-output * bg ~/wallpapers/homer_on_the_trail.jpg fill
+output eDP-1 scale 1.6
+output * bg ~/wallpapers/wallhaven-mpgko1_1920x1080.png fill
 
 #################
 ### AUTOSTART ###
@@ -41,14 +41,11 @@ exec swayosd-server
 # split new windows along the focused window's longer side (1 | top/bottom instead of 1 | 1 | 1)
 exec ~/.local/bin/autotiling
 
-# lock after 5 minutes idle, screen off 30 seconds later, suspend after 30 minutes
-exec swayidle -w \
-    timeout 300 'swaylock -f' \
-    timeout 330 'swaymsg "output * power off"' resume 'swaymsg "output * power on"' \
-    timeout 1800 'systemctl suspend' \
-    before-sleep 'swaylock -f' \
-    after-resume 'swaymsg "output * power on"' \
-    lock 'swaylock -f'
+# seconds idle before locking, turning the screen off, and suspending (0 = never).
+# idle.sh starts swayidle with these at the end of this file, after settings.conf can change them.
+set $idle_lock 300
+set $idle_screen_off 330
+set $idle_suspend 1800
 
 #####################
 ### LOOK AND FEEL ###
@@ -86,6 +83,7 @@ input type:pointer {
 input type:touchpad {
     natural_scroll enabled
     pointer_accel 0.3
+    scroll_factor 0.54
 }
 
 focus_follows_mouse yes
@@ -206,7 +204,9 @@ for_window [app_id="org.kde.ark"] floating enable
 for_window [app_id="org.pulseaudio.pavucontrol"] floating enable, resize set 900 560
 for_window [class="feh"] floating enable, resize set 80 ppt 80 ppt, move position center
 for_window [app_id="walcalc"] floating enable
-for_window [app_id="walwrite"] floating enable
+for_window [app_id="^(dev\.dotfiles\.)?walwrite$"] floating enable
+# settings and wallpaper picker: movable windows that stay open until closed
+for_window [app_id="^dev\.dotfiles\.(SettingsPanel|WallpaperPicker)$"] floating enable, move position center
 
 ###########
 ### BAR ###
@@ -217,3 +217,9 @@ bar {
 }
 
 include /etc/sway/config.d/*
+
+# Unsaved changes from the settings panel (Super+,). They override anything above until
+# they're saved into this file or discarded. Keep this near the end.
+include ~/.config/sway/settings.conf
+
+exec_always ~/.local/bin/idle.sh $idle_lock $idle_screen_off $idle_suspend

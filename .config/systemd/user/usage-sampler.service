@@ -1,0 +1,13 @@
+[Unit]
+Description=Battery and app usage history for the settings panel
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/usage-sampler.py
+Restart=on-failure
+RestartSec=30
+Nice=19
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target

@@ -256,7 +256,7 @@ def total(value):
 
 
 def local_time(value):
-    return datetime.fromtimestamp(value).astimezone().strftime("%b %d %H:%M") if value else "unknown"
+    return datetime.fromtimestamp(value).astimezone().strftime("%b %d %-I:%M %p") if value else "unknown"
 
 
 def quotas(value):

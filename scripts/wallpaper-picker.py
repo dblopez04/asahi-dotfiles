@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Wallpaper picker popup, styled like the fuzzel menus.
+"""Wallpaper picker window, styled like the fuzzel menus.
 
 Usage: wallpaper-picker.py [gallery]    (running it again while it's open closes it)
 
 Shows a grid of ~/wallpapers, or of github.com/dharmx/walls (tab switches). Picking one
-from the gallery downloads it into ~/wallpapers. The pick is set as the sway wallpaper
-and wal.sh themes everything from it.
+from the gallery downloads it into ~/wallpapers. The pick becomes the sway wallpaper (as an
+unsaved settings change, see dotconfig.py) and wal.sh themes everything from it. The window
+stays open to try others; drag it by its top bar.
 
 Keys: type to filter, arrows move, enter picks, tab switches local/gallery,
       left/right move between the gallery's categories and its grid, esc closes.
+
+The settings panel embeds the same grid (WallpaperBrowser) as its wallpaper page.
 """
 import hashlib
 import json
@@ -22,21 +25,18 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from ctypes import CDLL
 from string import Template
-
-# gtk4-layer-shell has to be loaded before libwayland-client, i.e. before Gtk
-CDLL("libgtk4-layer-shell.so.0")
 
 import gi
 
 gi.require_version("Gdk", "4.0")
 gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Gtk", "4.0")
-gi.require_version("Gtk4LayerShell", "1.0")
 gi.require_version("Pango", "1.0")
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
-from gi.repository import Gtk4LayerShell as LayerShell
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import dotconfig  # noqa: E402
 
 APP_ID = "dev.dotfiles.WallpaperPicker"
 WAL = os.path.expanduser("~/.cache/wal")
@@ -98,9 +98,11 @@ def load_theme():
 
 
 CSS = """
-window.wallpaper-picker { background: transparent; }
+window.wallpaper-picker { background: $bg; }
 
-.frame { background: $bg; color: $fg; border: 1px solid $border; }
+.frame { background: $bg; color: $fg; }
+window.wallpaper-picker .frame { border: 1px solid $border; }
+.pending { color: $accent; }
 .frame, .frame * {
     font-family: "BlexMono Nerd Font", monospace;
     font-size: 11pt;
@@ -313,81 +315,98 @@ def thumbnail(item):
 
 
 def current_wallpaper():
-    """The image in the sway config's `output * bg` line, or None."""
-    try:
-        with open(SWAY_CONFIG) as f:
-            match = BG_LINE.search(f.read())
-    except OSError:
-        return None
+    """The image in the (staged or saved) `output * bg` line, or None."""
+    match = BG_LINE.search(dotconfig.sway_value("output * bg") or "")
     return os.path.expanduser(match.group(2).strip('"')) if match else None
 
 
 def set_wallpaper(path):
-    """Point the sway config's `output * bg` line at path. Returns an error message, or None."""
+    """Stage `output * bg path` as a settings change. Returns an error message, or None."""
     home = os.path.expanduser("~")
     short = "~" + path[len(home):] if path.startswith(home + "/") else path
     if " " in short:
         short = f'"{short}"'
+    match = BG_LINE.search(dotconfig.sway_value("output * bg") or "")
+    mode = match.group(3).strip() if match and match.group(3).strip() else "fill"
     try:
-        with open(SWAY_CONFIG) as f:
-            config = f.read()
-        config, found = BG_LINE.subn(lambda m: m.group(1) + short + m.group(3), config, count=1)
-        if not found:
-            return "no `output * bg` line in the sway config"
-        with open(SWAY_CONFIG, "w") as f:
-            f.write(config)
+        # wal.sh reloads sway right after, so don't reload twice
+        dotconfig.stage_sway(f"output * bg {short} {mode}", reload=False)
     except OSError as e:
-        return f"couldn't update the sway config: {e.strerror.lower()}"
+        return f"couldn't stage the change: {e.strerror.lower()}"
     return None
 
 
-##############
-### PICKER ###
-##############
+###############
+### BROWSER ###
+###############
 
 
-class Picker(Gtk.ApplicationWindow):
-    def __init__(self, app):
-        super().__init__(application=app, title="wallpaper", css_classes=["wallpaper-picker"])
-        self.app = app
+def watch_theme(callback):
+    """Call callback() shortly after wal writes a new colors.json. Keep the returned monitor alive."""
+    monitor = Gio.File.new_for_path(WAL).monitor_directory(Gio.FileMonitorFlags.NONE, None)
+    pending = [0]
+
+    def changed(_monitor, file, _other, _event):
+        if file.get_basename() != "colors.json":
+            return
+        if pending[0]:
+            GLib.source_remove(pending[0])
+
+        def fire():
+            pending[0] = 0
+            callback()
+            return False
+
+        pending[0] = GLib.timeout_add(200, fire)
+
+    monitor.connect("changed", changed)
+    return monitor
+
+
+def theme_css():
+    return Template(CSS).substitute(load_theme())
+
+
+class WallpaperBrowser(Gtk.Box):
+    """The local/gallery grid with filtering, downloads, and applying. Embedded by the picker
+    window and the settings panel; on_pending() runs when the staged changes may have changed."""
+
+    def __init__(self, on_pending=None, columns=None, show_prompt=True):
+        super().__init__(orientation=V, hexpand=True, vexpand=True)
+        self.on_pending = on_pending or (lambda: None)
+        self.columns = dict(COLUMNS, **(columns or {}))
         self.mode = None
         self.items = []  # what the grid shows
         self.visible = []  # indexes of the items that match the filter
         self.filter = ""
         self.gallery = None  # {category: [items]} once loaded
         self.gallery_loading = False
-        self.busy = False  # downloading a pick
+        self.busy = False  # downloading or theming
         self.generation = 0  # bumped when the grid is rebuilt, so late thumbnails are dropped
         self.jobs = queue.Queue()
         for _ in range(6):
             threading.Thread(target=self._thumbnail_worker, daemon=True).start()
 
-        # a transparent overlay over the whole screen, so clicking outside the picker closes it
-        LayerShell.init_for_window(self)
-        LayerShell.set_namespace(self, "wallpaper-picker")
-        LayerShell.set_layer(self, LayerShell.Layer.OVERLAY)
-        for edge in (LayerShell.Edge.TOP, LayerShell.Edge.BOTTOM, LayerShell.Edge.LEFT, LayerShell.Edge.RIGHT):
-            LayerShell.set_anchor(self, edge, True)
-        LayerShell.set_keyboard_mode(self, LayerShell.KeyboardMode.EXCLUSIVE)
-
-        frame = Gtk.Box(orientation=V, css_classes=["frame"])
-        header = Gtk.Box(spacing=4, css_classes=["prompt"])
+        self.header = Gtk.Box(spacing=4, css_classes=["prompt"])
         self.prompt = label("", hexpand=True, ellipsize=True)
-        header.append(self.prompt)
+        self.prompt.set_visible(show_prompt)
+        if not show_prompt:
+            self.header.append(Gtk.Box(hexpand=True))
+        self.header.append(self.prompt)
         self.tabs = {}
         for mode in COLUMNS:
             tab = Gtk.Button(label=mode, css_classes=["tab"], focusable=False)
             tab.connect("clicked", lambda _, mode=mode: self.show(mode))
-            header.append(tab)
+            self.header.append(tab)
             self.tabs[mode] = tab
-        frame.append(header)
-        frame.append(Gtk.Box(css_classes=["hsep"]))
+        self.append(self.header)
+        self.append(Gtk.Box(css_classes=["hsep"]))
 
         body = Gtk.Box(vexpand=True)
         self.sidebar = Gtk.ListBox(css_classes=["sidebar"], selection_mode=Gtk.SelectionMode.BROWSE)
         self.sidebar.connect("row-selected", lambda _, row: row and self.show_category(row.get_index()))
         self.sidebar_box = Gtk.Box(visible=False)
-        self.sidebar_box.append(Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, width_request=190,
+        self.sidebar_box.append(Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, width_request=170,
                                                    child=self.sidebar))
         self.sidebar_box.append(Gtk.Box(css_classes=["vsep"]))
         body.append(self.sidebar_box)
@@ -400,29 +419,16 @@ class Picker(Gtk.ApplicationWindow):
         grid_box = Gtk.Box(orientation=V, css_classes=["grid"])
         grid_box.append(self.grid)
         body.append(Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, hexpand=True, child=grid_box))
-        frame.append(body)
+        self.append(body)
 
-        frame.append(Gtk.Box(css_classes=["hsep"]))
-        footer = Gtk.Box(spacing=16, css_classes=["footer"])
+        self.append(Gtk.Box(css_classes=["hsep"]))
+        footer = Gtk.Box(spacing=12, css_classes=["footer"])
         self.status = label("", hexpand=True, ellipsize=True)
         self.hints = label("", "hints")
         footer.append(self.status)
         footer.append(self.hints)
-        frame.append(footer)
-        # Keep the popup at the local view's size even when gallery content has
-        # a larger natural size. The inner scrollers still handle navigation.
-        self.set_child(Gtk.ScrolledWindow(
-            halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER,
-            width_request=WIDTH, height_request=HEIGHT,
-            hscrollbar_policy=Gtk.PolicyType.EXTERNAL,
-            vscrollbar_policy=Gtk.PolicyType.EXTERNAL, child=frame))
-
-        keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
-        keys.connect("key-pressed", self._key_pressed)
-        self.add_controller(keys)
-        click = Gtk.GestureClick()
-        click.connect("pressed", self._clicked)
-        self.add_controller(click)
+        self.footer = footer
+        self.append(footer)
 
     ### views ###
 
@@ -433,19 +439,19 @@ class Picker(Gtk.ApplicationWindow):
         for name, tab in self.tabs.items():
             (tab.add_css_class if name == mode else tab.remove_css_class)("on")
         self.sidebar_box.set_visible(mode == "gallery")
-        self.grid.set_min_children_per_line(COLUMNS[mode])
-        self.grid.set_max_children_per_line(COLUMNS[mode])
+        self.grid.set_min_children_per_line(self.columns[mode])
+        self.grid.set_max_children_per_line(self.columns[mode])
 
         if mode == "local":
-            self.hints.set_label("tab gallery  enter pick  esc close")
+            self.hints.set_label("tab gallery  enter pick")
             self.set_items(local_items())
             current = current_wallpaper()
             self.focus_item(next((i for i, item in enumerate(self.items) if item["path"] == current), 0))
             if not self.items:
-                self.status.set_label(f"no images in {WALLPAPERS}, press tab for the gallery")
+                self.status.set_label(f"no images in {WALLPAPERS}")
             return
 
-        self.hints.set_label("←→ categories  tab local  enter download  esc close")
+        self.hints.set_label("←→ categories  tab local  enter download")
         if self.gallery:
             row = self.sidebar.get_selected_row() or self.sidebar.get_row_at_index(0)
             self.sidebar.select_row(row)
@@ -457,6 +463,12 @@ class Picker(Gtk.ApplicationWindow):
         if not self.gallery_loading:
             self.gallery_loading = True
             in_background(gallery_items, self._gallery_loaded)
+
+    def refresh_local(self):
+        """Pick up new files in ~/wallpapers (downloads, or files added elsewhere)."""
+        if self.mode == "local":
+            self.mode = None
+            self.show("local")
 
     def _gallery_loaded(self, gallery):
         self.gallery_loading = False
@@ -537,7 +549,8 @@ class Picker(Gtk.ApplicationWindow):
             self.grid.unselect_all()
             return
         child = self.grid.get_child_at_index(self.visible[position])
-        focus = self.get_focus()
+        root = self.get_root()
+        focus = root.get_focus() if root else None
         self.grid.select_child(child)
         if focus is None or focus.is_ancestor(self.grid):
             child.grab_focus()
@@ -553,6 +566,9 @@ class Picker(Gtk.ApplicationWindow):
             self.focus_item(selected)
         elif self.visible:
             self.focus_item(self.visible[0])
+        else:
+            return False
+        return True
 
     def select_category(self, index):
         if row := self.sidebar.get_row_at_index(max(0, min(index, len(self.gallery) - 1))):
@@ -617,30 +633,44 @@ class Picker(Gtk.ApplicationWindow):
         in_background(work, done)
 
     def apply(self, path):
-        if error := set_wallpaper(path):
+        # picking the current wallpaper again just re-runs the theming (e.g. after it failed)
+        if path != current_wallpaper() and (error := set_wallpaper(path)):
             self.status.set_label(error)
             return
-        # wal.sh reloads sway (which puts up the new wallpaper) and re-themes everything, after the picker is gone
-        subprocess.Popen(["sh", "-c", '"$0" "$1" >/dev/null 2>&1 || notify-send -a wallpaper "theming failed" "wal.sh $1"',
-                          WAL_SH, path], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True)
-        self.app.quit()
+        self.busy = True
+        self.status.set_label(f"theming from {os.path.basename(path)}...")
+        self.on_pending()
+
+        def work():
+            try:
+                p = subprocess.run([WAL_SH, path], capture_output=True, text=True, timeout=300)
+                return None if p.returncode == 0 else (p.stderr.strip().splitlines() or ["failed"])[-1]
+            except (OSError, subprocess.SubprocessError) as e:
+                return str(e)
+
+        def done(error):
+            self.busy = False
+            self.status.set_label(f"wal.sh: {error.lower()}" if error else f"{os.path.basename(path)} · applied")
+            for index, item in enumerate(self.items):
+                if item.get("path") == path:
+                    break
+            self.on_pending()
+
+        in_background(work, done)
 
     ### input ###
 
-    def _key_pressed(self, _, keyval, _keycode, state):
+    def handle_key(self, keyval, state):
+        """Keys for the grid; returns True when used. Esc is left to the window."""
         name = Gdk.keyval_name(keyval) or ""
         mods = state & Gtk.accelerator_get_default_mod_mask()
-        focus = self.get_focus()
+        root = self.get_root()
+        focus = root.get_focus() if root else None
         in_sidebar = focus is not None and focus.is_ancestor(self.sidebar)
-        # GTK only turns on focus rings for keys it handles itself, and these get caught first
-        self.set_focus_visible(True)
 
-        if name == "Escape":
-            self.app.quit()
-        elif name in ("Tab", "ISO_Left_Tab"):
+        if name in ("Tab", "ISO_Left_Tab") and not mods & Gdk.ModifierType.CONTROL_MASK:
             self.show("gallery" if self.mode == "local" else "local")
-        elif name == "BackSpace":
+        elif name == "BackSpace" and self.filter:
             self.set_filter("" if mods & Gdk.ModifierType.CONTROL_MASK else self.filter[:-1])
         elif name == "u" and mods == Gdk.ModifierType.CONTROL_MASK:
             self.set_filter("")
@@ -656,7 +686,8 @@ class Picker(Gtk.ApplicationWindow):
             self.focus_grid()
         elif self.mode == "gallery" and self.gallery and name == "Left" and self.at_left_edge(focus):
             self.sidebar.get_selected_row().grab_focus()
-        elif not mods & ~Gdk.ModifierType.SHIFT_MASK and (char := Gdk.keyval_to_unicode(keyval)) >= 32 and char != 127:
+        elif not mods & ~Gdk.ModifierType.SHIFT_MASK and (char := Gdk.keyval_to_unicode(keyval)) >= 32 \
+                and char != 127 and name not in ("Left", "Right", "Up", "Down"):
             self.set_filter(self.filter + chr(char))
         else:
             return False
@@ -666,37 +697,103 @@ class Picker(Gtk.ApplicationWindow):
         child = focus if isinstance(focus, Gtk.FlowBoxChild) else focus and focus.get_ancestor(Gtk.FlowBoxChild)
         if child is None or child.get_index() not in self.visible:
             return True
-        return self.visible.index(child.get_index()) % COLUMNS[self.mode] == 0
+        return self.visible.index(child.get_index()) % self.columns[self.mode] == 0
 
-    def _clicked(self, gesture, _n, x, y):
-        if self.pick(x, y, Gtk.PickFlags.DEFAULT) in (None, self):
-            self.app.quit()
+
+##############
+### PICKER ###
+##############
+
+
+class PickerWindow(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Wallpaper", css_classes=["wallpaper-picker"],
+                         decorated=False, resizable=True)
+        self.app = app
+        self.set_default_size(WIDTH, HEIGHT)
+
+        frame = Gtk.Box(orientation=V, css_classes=["frame"])
+        self.browser = WallpaperBrowser(on_pending=self.update_pending)
+        # the top bar moves the window, like a title bar
+        header = self.browser.header
+        self.browser.remove(header)
+        self.pending_label = label("", "pending")
+        self.save_button = Gtk.Button(label="[ save ]", css_classes=["tab"], focusable=False)
+        self.save_button.connect("clicked", lambda _: self.save_pending())
+        self.discard_button = Gtk.Button(label="[ undo ]", css_classes=["tab"], focusable=False)
+        self.discard_button.connect("clicked", lambda _: self.discard_pending())
+        close = Gtk.Button(label="×", css_classes=["tab"], focusable=False, tooltip_text="Close (Esc)")
+        close.connect("clicked", lambda _: self.close())
+        for widget in (self.pending_label, self.save_button, self.discard_button, close):
+            header.append(widget)
+        frame.append(Gtk.WindowHandle(child=header))
+        frame.append(self.browser)
+        self.set_child(frame)
+        # put the header first again (the browser's separator follows it)
+        frame.reorder_child_after(self.browser, frame.get_first_child())
+
+        keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self._key_pressed)
+        self.add_controller(keys)
+        self.update_pending()
+
+    def update_pending(self):
+        count = dotconfig.pending_count()
+        busy = self.browser.busy
+        self.pending_label.set_label(f"{count} unsaved" if count else "")
+        for button in (self.save_button, self.discard_button):
+            button.set_visible(bool(count))
+            button.set_sensitive(not busy)
+
+    def save_pending(self):
+        ok, message = dotconfig.save_all()
+        self.browser.status.set_label(message if not ok else "saved to the sway config")
+        self.update_pending()
+
+    def discard_pending(self):
+        dotconfig.discard_all()
+        self.browser.status.set_label("changes undone")
+        self.update_pending()
+        path = current_wallpaper()
+        if path and os.path.exists(path):
+            # back to the saved wallpaper's colors too
+            subprocess.Popen([WAL_SH, path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+
+    def _key_pressed(self, _, keyval, _keycode, state):
+        self.set_focus_visible(True)
+        if keyval == Gdk.KEY_Escape:
+            if self.browser.filter:
+                self.browser.set_filter("")
+            else:
+                self.close()
+            return True
+        return self.browser.handle_key(keyval, state)
 
 
 class App(Gtk.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
         self.window = None
+        self.css = Gtk.CssProvider()
 
     def do_startup(self):
         Gtk.Application.do_startup(self)
-        action = Gio.SimpleAction.new("quit", None)
-        action.connect("activate", lambda *_: self.quit())
-        self.add_action(action)
-        css = Gtk.CssProvider()
-        css.load_from_string(Template(CSS).substitute(load_theme()))
+        self.css.load_from_string(theme_css())
         # above ~/.config/gtk-4.0/gtk.css, which is also generated by pywal
-        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.css,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_USER + 1)
+        self.theme_monitor = watch_theme(lambda: self.css.load_from_string(theme_css()))
 
     def do_command_line(self, command_line):
         args = command_line.get_arguments()[1:]
         if args[:1] in (["-h"], ["--help"]):
             command_line.print_literal(__doc__)
         elif self.window is None:
-            self.window = Picker(self)
+            self.window = PickerWindow(self)
+            self.window.connect("close-request", lambda *_: self.quit() or False)
             self.window.present()
-            self.window.show("gallery" if args[:1] == ["gallery"] else "local")
+            self.window.browser.show("gallery" if args[:1] == ["gallery"] else "local")
         else:
             self.quit()
         return 0

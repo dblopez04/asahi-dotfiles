@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-# Walwrite: a dead-simple Markdown writing app in the pywal colors, after Omarchy's
-# Omawrite (github.com/omacom/omawrite). Same shortcuts, draft recovery, and file handling.
+# Walwrite: a simple Markdown and text editor in the pywal colors.
 #
-# Usage: walwrite [FILE]
+# Usage: walwrite [FILE...]
+#
+# Several files open at once (switch with the sidebar, Ctrl+Tab, or Ctrl+PageUp/PageDown), and
+# the open files come back the next time it starts. Files that have been saved once are saved
+# again automatically a moment after each edit; untitled documents are kept as drafts. Press Alt
+# for the menu bar, Ctrl+E for the rendered Markdown, and Ctrl+? for every shortcut.
 
-import fcntl
+import html
 import json
 import os
 import re
 import stat
-import subprocess
 import sys
 import tempfile
+import time
+import uuid
 from urllib.parse import urlsplit
 
 import gi
@@ -20,28 +25,51 @@ gi.require_version("Gdk", "4.0")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
+try:  # the rendered preview; without WebKitGTK it falls back to a plain GTK rendering
+    gi.require_version("WebKit", "6.0")
+    from gi.repository import WebKit  # noqa: E402
+except (ImportError, ValueError):
+    WebKit = None
+
+try:
+    import markdown as python_markdown
+except ImportError:
+    python_markdown = None
+
+APP_ID = "dev.dotfiles.walwrite"
 APP_NAME = "walwrite"
 WAL_DIR = os.path.expanduser("~/.cache/wal")
 STATE_DIR = os.path.join(GLib.get_user_state_dir(), APP_NAME)
 SETTINGS_FILE = os.path.join(STATE_DIR, "settings.json")
+SESSION_FILE = os.path.join(STATE_DIR, "session.json")
+DRAFTS_DIR = os.path.join(STATE_DIR, "drafts")
 FONT_FAMILY = "BlexMono Nerd Font"
 ICON_FONT = "BlexMono Nerd Font Propo"
-SYNTAX_TAGS = ("marker", "heading", "bold", "italic", "code", "quote", "link", "hidden")
+SYNTAX_TAGS = ("marker", "heading", "bold", "italic", "code", "quote", "link")
+TEXT_FILES = (".md", ".markdown", ".txt", ".text", ".mdown", ".mkd")
+AUTOSAVE_DELAY_MS = 1500
+LINE_GAP = 7  # pixels between lines; set on the view so freshly typed text is spaced right away
 
 SHORTCUTS = [
-    ("Ctrl+S", "Save"),
-    ("Ctrl+Shift+S", "Save As"),
+    ("Ctrl+N", "New document"),
+    ("Ctrl+Shift+N", "New window"),
     ("Ctrl+O", "Open"),
-    ("Ctrl+N", "New Window"),
-    ("Ctrl+Z", "Undo"),
-    ("Ctrl+Shift+Z / Ctrl+Y", "Redo"),
-    ("Ctrl+F", "Find"),
-    ("Ctrl+H", "Find and Replace"),
-    ("Ctrl+B", "Bold"),
-    ("Ctrl+I", "Italic"),
-    ("Ctrl+K", "Link"),
+    ("Ctrl+Shift+O", "Open folder in the sidebar"),
+    ("Ctrl+S", "Save"),
+    ("Ctrl+Shift+S", "Save as"),
+    ("Ctrl+W", "Close document"),
+    ("Ctrl+Tab / Ctrl+PageDown", "Next document"),
+    ("Ctrl+Shift+Tab / Ctrl+PageUp", "Previous document"),
+    ("Ctrl+\\", "Toggle sidebar"),
+    ("Ctrl+E", "Toggle rendered Markdown"),
+    ("Ctrl+Shift+E", "Side-by-side preview"),
+    ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo"),
+    ("Ctrl+F / Ctrl+H", "Find / replace"),
+    ("Ctrl+B / Ctrl+I / Ctrl+K", "Bold / italic / link"),
+    ("Ctrl+= / Ctrl+- / Ctrl+0", "Text size"),
     ("Ctrl+P", "Print"),
-    ("F11 / Super+F", "Fullscreen"),
+    ("F11", "Fullscreen"),
+    ("Alt", "Menu bar"),
     ("Ctrl+?", "Shortcuts"),
 ]
 
@@ -72,11 +100,11 @@ def normalized_link_url(clipboard_text):
 
 
 def suggested_file_name(text):
-    name = text.split("\n", 1)[0].strip()
+    name = re.sub(r"^#+\s*", "", text.split("\n", 1)[0].strip())
     name = re.sub(r"[/\x00-\x1f\x7f]", "-", name)[:120].strip()
     if name in ("", ".", ".."):
         name = "Untitled"
-    if not name.lower().endswith(".md"):
+    if not name.lower().endswith(TEXT_FILES):
         name += ".md"
     return name
 
@@ -97,14 +125,15 @@ def inline_markup(text):
     for m in re.finditer(r"(\*\*|__)(.+?)(\1)", text):
         markup.append(("bold", (m.start(2), len(m.group(2))),
                        [(m.start(1), len(m.group(1))), (m.start(3), len(m.group(3)))]))
-    for m in re.finditer(r"(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)", text):
+    for m in re.finditer(r"(?<![*\w])\*([^*\n]+)\*(?!\*)|(?<![_\w])_([^_\n]+)_(?![_\w])", text):
         group = 1 if m.group(1) is not None else 2
         markup.append(("italic", (m.start(group), len(m.group(group))),
                        [(m.start(), 1), (m.end() - 1, 1)]))
-    for m in re.finditer(r"\[([^\]]+)\]\(((?:\\.|[^)])+)\)", text):
+    for m in re.finditer(r"!?\[([^\]]+)\]\(((?:\\.|[^)])+)\)", text):
         content_end = m.end(1)
+        opener = 2 if m.group().startswith("!") else 1
         markup.append(("link", (m.start(1), len(m.group(1))),
-                       [(m.start(), 1), (content_end, m.end() - content_end)]))
+                       [(m.start(), opener), (content_end, m.end() - content_end)]))
     return markup
 
 
@@ -112,42 +141,12 @@ def escape_markup(text):
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def inline_to_pango(line):
-    opens, closes, hidden = {}, {}, set()
-    tags = {"bold": ("<b>", "</b>"), "italic": ("<i>", "</i>"), "link": ("<u>", "</u>")}
-    for kind, (start, length), markers in inline_markup(line):
-        opens.setdefault(start, []).append(tags[kind][0])
-        closes.setdefault(start + length, []).insert(0, tags[kind][1])
-        for marker_start, marker_length in markers:
-            hidden.update(range(marker_start, marker_start + marker_length))
-    parts = []
-    for i, char in enumerate(line):
-        parts += closes.get(i, []) + opens.get(i, [])
-        if i not in hidden:
-            parts.append(escape_markup(char))
-    parts += closes.get(len(line), [])
-    return "".join(parts)
+def is_text_file(path):
+    return path.lower().endswith(TEXT_FILES)
 
 
-def markdown_to_pango(text):
-    """A light rendering for printing: headings, quotes, bold, italic, and links."""
-    lines = []
-    for line in text.split("\n"):
-        heading = re.match(r"^(#{1,6})\s+(.*)$", line)
-        quote = re.match(r"^\s*>+\s?(.*)$", line)
-        if heading:
-            size = {1: "xx-large", 2: "x-large", 3: "large"}.get(len(heading.group(1)), "medium")
-            lines.append(f'<span size="{size}" weight="bold">{inline_to_pango(heading.group(2))}</span>')
-        elif quote:
-            lines.append(f"<i>{inline_to_pango(quote.group(1))}</i>")
-        else:
-            lines.append(inline_to_pango(line))
-    markup = "\n".join(lines)
-    try:
-        Pango.parse_markup(markup, -1, "\0")
-    except GLib.Error:
-        markup = escape_markup(text)  # overlapping spans; print it as plain text
-    return markup
+def is_markdown(path):
+    return path is None or not path.lower().endswith((".txt", ".text"))
 
 
 def atomic_write(path, data):
@@ -175,68 +174,219 @@ def atomic_write(path, data):
         raise
 
 
-def read_settings():
+def read_json(path, default):
     try:
-        with open(SETTINGS_FILE) as f:
-            return json.load(f)
+        with open(path) as f:
+            value = json.load(f)
+        return value if isinstance(value, type(default)) else default
     except (OSError, ValueError):
-        return {}
+        return default
+
+
+def write_json(path, value):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        atomic_write(path, json.dumps(value, indent=1).encode())
+    except OSError:
+        pass
+
+
+def read_settings():
+    return read_json(SETTINGS_FILE, {})
 
 
 def update_settings(**values):
     settings = read_settings()
     settings.update(values)
-    try:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        with open(SETTINGS_FILE, "w") as f:
-            json.dump(settings, f)
-    except OSError:
-        pass
+    write_json(SETTINGS_FILE, settings)
 
 
-class Recovery:
-    """Unsaved drafts, one slot per window, locked for the life of the process."""
+def short_path(path):
+    home = os.path.expanduser("~")
+    return "~" + path[len(home):] if path == home or path.startswith(home + "/") else path
 
-    def __init__(self):
-        self.path = None
-        self._lock = None
-        os.makedirs(STATE_DIR, exist_ok=True)
-        # claim an orphaned draft before an empty slot, so a crashed window is always recovered
-        for claim_existing in (True, False):
-            for slot in range(100):
-                base = os.path.join(STATE_DIR, f"recovery-{slot}")
-                if os.path.exists(base + ".json") != claim_existing:
-                    continue
-                lock = open(base + ".lock", "w")
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except OSError:
-                    lock.close()
-                    continue
-                self.path, self._lock = base + ".json", lock
-                return
 
-    def write(self, file_path, text):
-        if self.path:
-            try:
-                atomic_write(self.path, json.dumps({"file": file_path or "", "text": text}).encode())
-            except OSError:
-                pass
+# ---------- markdown rendering ----------
 
-    def read(self):
+def render_inline(text):
+    """Inline Markdown to HTML: code, images, links, bold, italic, strikethrough, autolinks."""
+    stash = []
+
+    def keep(fragment):
+        stash.append(fragment)
+        return f"\x00{len(stash) - 1}\x00"
+
+    text = re.sub(r"`([^`]+)`", lambda m: keep(f"<code>{html.escape(m.group(1))}</code>"), text)
+    text = re.sub(r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"([^\"]*)\")?\)",
+                  lambda m: keep(f'<img src="{html.escape(m.group(2))}" alt="{html.escape(m.group(1))}">'), text)
+    text = re.sub(r"<(https?://[^>\s]+)>", lambda m: keep(f'<a href="{html.escape(m.group(1))}">'
+                                                         f'{html.escape(m.group(1))}</a>'), text)
+    links = []
+    text = re.sub(r"\[([^\]]+)\]\(((?:\\.|[^)])+)\)",
+                  lambda m: links.append((m.group(1), m.group(2).replace("\\)", ")").replace("\\(", "(")))
+                  or f"\x01{len(links) - 1}\x01", text)
+    text = html.escape(text, quote=False)
+    text = re.sub(r"(\*\*|__)(.+?)\1", r"<strong>\2</strong>", text)
+    text = re.sub(r"(?<![*\w])\*([^*\n]+)\*(?!\*)|(?<![_\w])_([^_\n]+)_(?![_\w])",
+                  lambda m: f"<em>{m.group(1) or m.group(2)}</em>", text)
+    text = re.sub(r"~~(.+?)~~", r"<del>\1</del>", text)
+    text = re.sub(r"\x01(\d+)\x01", lambda m: '<a href="{}">{}</a>'.format(
+        html.escape(links[int(m.group(1))][1]), render_inline(links[int(m.group(1))][0])), text)
+    return re.sub(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], text)
+
+
+def markdown_blocks(text):
+    """A small CommonMark-ish block parser: [(kind, data)] for headings, paragraphs, lists,
+    quotes, fenced code, rules and tables. Used when python-markdown isn't installed."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    blocks, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip():
+            i += 1
+            continue
+        fence = re.match(r"^\s*(```|~~~)\s*(\S*)", line)
+        if fence:
+            body, i = [], i + 1
+            while i < len(lines) and not lines[i].strip().startswith(fence.group(1)):
+                body.append(lines[i])
+                i += 1
+            blocks.append(("code", (fence.group(2), "\n".join(body))))
+            i += 1
+            continue
+        heading = re.match(r"^(#{1,6})\s+(.*?)\s*#*\s*$", line)
+        if heading:
+            blocks.append(("heading", (len(heading.group(1)), heading.group(2))))
+            i += 1
+            continue
+        if re.match(r"^\s{0,3}([-*_])(?:\s*\1){2,}\s*$", line):
+            blocks.append(("rule", None))
+            i += 1
+            continue
+        if line.lstrip().startswith(">"):
+            body = []
+            while i < len(lines) and lines[i].lstrip().startswith(">"):
+                body.append(re.sub(r"^\s*>\s?", "", lines[i]))
+                i += 1
+            blocks.append(("quote", markdown_blocks("\n".join(body))))
+            continue
+        item = re.match(r"^(\s*)([-+*]|\d+[.)])\s+(.*)$", line)
+        if item:
+            ordered = item.group(2)[0].isdigit()
+            items = []
+            while i < len(lines):
+                m = re.match(r"^(\s*)([-+*]|\d+[.)])\s+(.*)$", lines[i])
+                if m and bool(m.group(2)[0].isdigit()) == ordered and len(m.group(1)) <= len(item.group(1)) + 1:
+                    items.append([m.group(3)])
+                elif m or (lines[i].startswith("  ") and items):
+                    items[-1].append(lines[i].strip() if not m else lines[i][len(item.group(1)) + 2:])
+                else:
+                    break
+                i += 1
+            start = int(item.group(2)[:-1]) if ordered else 1
+            blocks.append(("list", (ordered, start, items)))
+            continue
+        if "|" in line and i + 1 < len(lines) and re.match(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$", lines[i + 1]):
+            split = lambda row: [cell.strip() for cell in row.strip().strip("|").split("|")]
+            header, rows, i = split(line), [], i + 2
+            while i < len(lines) and "|" in lines[i] and lines[i].strip():
+                rows.append(split(lines[i]))
+                i += 1
+            blocks.append(("table", (header, rows)))
+            continue
+        body = []
+        while i < len(lines) and lines[i].strip() and not re.match(r"^(#{1,6}\s|\s*(```|~~~)|\s*>)", lines[i]):
+            body.append(lines[i])
+            i += 1
+        blocks.append(("paragraph", "\n".join(body)))
+    return blocks
+
+
+def blocks_to_html(blocks):
+    parts = []
+    for kind, data in blocks:
+        if kind == "heading":
+            parts.append(f"<h{data[0]}>{render_inline(data[1])}</h{data[0]}>")
+        elif kind == "paragraph":
+            parts.append("<p>" + "<br>".join(render_inline(l) for l in data.split("\n")) + "</p>")
+        elif kind == "code":
+            language = f' class="language-{html.escape(data[0])}"' if data[0] else ""
+            parts.append(f"<pre><code{language}>{html.escape(data[1])}</code></pre>")
+        elif kind == "rule":
+            parts.append("<hr>")
+        elif kind == "quote":
+            parts.append(f"<blockquote>{blocks_to_html(data)}</blockquote>")
+        elif kind == "list":
+            ordered, start, items = data
+            tag = "ol" if ordered else "ul"
+            rendered = []
+            for item in items:
+                task = re.match(r"^\[([ xX])\]\s+(.*)", item[0])
+                if task:
+                    box = '<input type="checkbox" disabled{}> '.format(" checked" if task.group(1) != " " else "")
+                    item = [task.group(2)] + item[1:]
+                else:
+                    box = ""
+                body = blocks_to_html(markdown_blocks("\n".join(item)))
+                body = re.sub(r"^<p>(.*?)</p>", r"\1", body, count=1, flags=re.S)
+                rendered.append(f"<li>{box}{body}</li>")
+            attribute = f' start="{start}"' if ordered and start != 1 else ""
+            parts.append(f"<{tag}{attribute}>{''.join(rendered)}</{tag}>")
+        elif kind == "table":
+            header, rows = data
+            head = "".join(f"<th>{render_inline(c)}</th>" for c in header)
+            body = "".join("<tr>" + "".join(f"<td>{render_inline(c)}</td>" for c in row) + "</tr>" for row in rows)
+            parts.append(f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>")
+    return "\n".join(parts)
+
+
+def markdown_to_html(text):
+    if python_markdown:
         try:
-            with open(self.path) as f:
-                data = json.load(f)
-        except (OSError, TypeError, ValueError):
-            return None
-        return data if isinstance(data, dict) and isinstance(data.get("text"), str) else None
+            return python_markdown.markdown(text, extensions=["extra", "sane_lists", "nl2br"])
+        except Exception:
+            pass
+    return blocks_to_html(markdown_blocks(text))
 
-    def clear(self):
-        if self.path:
-            try:
-                os.remove(self.path)
-            except FileNotFoundError:
-                pass
+
+def markdown_to_pango(text):
+    """A light rendering for printing and the preview without WebKit."""
+    out = []
+    for kind, data in markdown_blocks(text):
+        if kind == "heading":
+            size = {1: "xx-large", 2: "x-large", 3: "large"}.get(data[0], "medium")
+            out.append(f'<span size="{size}" weight="bold">{pango_inline(data[1])}</span>')
+        elif kind == "paragraph":
+            out.append("\n".join(pango_inline(l) for l in data.split("\n")))
+        elif kind == "code":
+            out.append(f"<tt>{escape_markup(data[1])}</tt>")
+        elif kind == "rule":
+            out.append("<span alpha=\"50%\">" + "─" * 40 + "</span>")
+        elif kind == "quote":
+            out.append("<i>" + re.sub(r"<[^>]+>", "", blocks_to_html(data)) + "</i>")
+        elif kind == "list":
+            ordered, start, items = data
+            out.append("\n".join(f"  {f'{start + n}.' if ordered else '•'} {pango_inline(' '.join(item))}"
+                                 for n, item in enumerate(items)))
+        elif kind == "table":
+            header, rows = data
+            out.append("\n".join("<tt>" + "  │  ".join(escape_markup(c) for c in row) + "</tt>"
+                                 for row in [header] + rows))
+    markup = "\n\n".join(out)
+    try:
+        Pango.parse_markup(markup, -1, "\0")
+    except GLib.Error:
+        markup = escape_markup(text)
+    return markup
+
+
+def pango_inline(line):
+    text = escape_markup(line)
+    text = re.sub(r"`([^`]+)`", r"<tt>\1</tt>", text)
+    text = re.sub(r"(\*\*|__)(.+?)\1", r"<b>\2</b>", text)
+    text = re.sub(r"(?<![*\w])\*([^*\n]+)\*(?!\*)", r"<i>\1</i>", text)
+    text = re.sub(r"!?\[([^\]]+)\]\([^)]*\)", r"<u>\1</u>", text)
+    return text
 
 
 # ---------- theme ----------
@@ -260,27 +410,61 @@ def mix(base, tint, amount):
     return "#%02x%02x%02x" % tuple(round(x + (y - x) * amount) for x, y in zip(a, b))
 
 
-def theme_css(p):
+def theme_css(p, font_size):
     bg, fg, accent = p["background"], p["foreground"], p["accent"]
     muted = mix(bg, fg, 0.5)
+    raised = mix(bg, fg, 0.04)
+    line = mix(bg, fg, 0.12)
     return f"""
 window.walwrite, window.walwrite-dialog {{ background-color: {bg}; color: {fg}; }}
 window.walwrite-dialog {{ border: 1px solid {accent}; }}
-.walwrite label, .walwrite entry, .walwrite-dialog label, button.square {{ font-family: "{FONT_FAMILY}", monospace; }}
-.walwrite textview.editor, .walwrite textview.editor text {{
+.walwrite label, .walwrite entry, .walwrite-dialog label, button.square, .walwrite popovermenubar,
+.walwrite popover {{ font-family: "{FONT_FAMILY}", monospace; }}
+.walwrite textview.editor, .walwrite textview.editor text, .walwrite textview.preview, .walwrite textview.preview text {{
     background-color: {bg}; color: {fg}; caret-color: {fg};
-    font-family: "{FONT_FAMILY}", monospace; font-size: 15pt;
+    font-family: "{FONT_FAMILY}", monospace; font-size: {font_size}pt;
 }}
 .walwrite textview text selection, .walwrite entry selection {{ background-color: {accent}; color: {bg}; }}
-.walwrite .placeholder {{ color: {muted}; font-size: 15pt; }}
-.walwrite .footer-status {{ opacity: 0.55; }}
-.walwrite .footer-status label, .walwrite .words {{ color: {muted}; font-size: 8.25pt; }}
-.walwrite .words {{ opacity: 0.75; }}
-.walwrite .footer-status button {{
-    background: none; border: none; box-shadow: none; min-width: 0; min-height: 0; padding: 2px 4px;
-    color: {muted}; font-family: "{ICON_FONT}"; font-size: 10pt;
+.walwrite .placeholder {{ color: {muted}; font-size: {font_size}pt; }}
+
+/* menu bar: hidden until Alt */
+.walwrite popovermenubar {{ background-color: {raised}; border-bottom: 1px solid {line}; padding: 0 6px; }}
+.walwrite popovermenubar > item {{ padding: 4px 10px; color: {fg}; border-radius: 0; }}
+.walwrite popovermenubar > item:hover, .walwrite popovermenubar > item:selected {{ background-color: {line}; }}
+.walwrite popover > contents {{ background-color: {raised}; color: {fg}; border: 1px solid {line};
+    border-radius: 0; box-shadow: none; padding: 4px 0; }}
+.walwrite popover modelbutton {{ border-radius: 0; padding: 4px 14px; min-height: 0; color: {fg}; }}
+.walwrite popover modelbutton:hover, .walwrite popover modelbutton:selected {{ background-color: {accent}; color: {bg}; }}
+.walwrite popover modelbutton accelerator {{ color: {muted}; margin-left: 24px; }}
+.walwrite popover modelbutton:hover accelerator {{ color: {bg}; }}
+.walwrite popover separator {{ background-color: {line}; margin: 4px 0; }}
+
+/* sidebar */
+.walwrite .sidebar {{ background-color: {raised}; border-right: 1px solid {line}; }}
+.walwrite .sidebar .section {{ color: {muted}; font-size: 8.5pt; padding: 12px 12px 4px 12px; }}
+.walwrite .sidebar list, .walwrite .sidebar listview {{ background: none; color: {fg}; }}
+.walwrite .sidebar row {{ padding: 3px 8px 3px 12px; border-radius: 0; min-height: 0; }}
+.walwrite .sidebar row:hover {{ background-color: {line}; }}
+.walwrite .sidebar row:selected {{ background-color: {mix(bg, accent, 0.35)}; color: {fg}; }}
+.walwrite .sidebar row label {{ font-size: 10pt; }}
+.walwrite .sidebar .dim {{ color: {muted}; }}
+.walwrite .sidebar .folder-name {{ color: {fg}; font-size: 9pt; }}
+.walwrite .sidebar button {{ background: none; border: none; box-shadow: none; min-width: 0; min-height: 0;
+    padding: 1px 5px; color: {muted}; font-family: "{ICON_FONT}"; font-size: 11pt; border-radius: 0; }}
+.walwrite .sidebar button:hover {{ color: {fg}; background-color: {line}; }}
+.walwrite paned > separator {{ background: none; min-width: 1px; }}
+
+/* footer */
+.walwrite .footer {{ padding: 4px 12px 6px 12px; }}
+.walwrite .footer label {{ color: {muted}; font-size: 9pt; }}
+.walwrite .footer button {{
+    background: none; border: none; box-shadow: none; min-width: 0; min-height: 0; padding: 2px 6px;
+    color: {muted}; font-family: "{ICON_FONT}"; font-size: 14pt; border-radius: 0;
 }}
-.walwrite .footer-status button:hover {{ color: {fg}; }}
+.walwrite .footer button:hover {{ color: {fg}; }}
+.walwrite .footer button.on {{ color: {accent}; }}
+
+/* search */
 .walwrite .search {{ background-color: {mix(bg, fg, 0.05)}; border: 1px solid {accent}; padding: 4px 8px 4px 16px; }}
 .walwrite .search entry {{
     background: none; border: none; box-shadow: none; outline: none; min-height: 0; padding: 4px 0;
@@ -289,10 +473,11 @@ window.walwrite-dialog {{ border: 1px solid {accent}; }}
 .walwrite .search .count {{ color: {fg}; font-size: 12pt; min-width: 58px; }}
 .walwrite .search button.icon {{
     background: none; border: none; box-shadow: none; border-radius: 0; min-width: 34px; min-height: 34px; padding: 0;
-    color: {fg}; font-family: "{ICON_FONT}"; font-size: 12pt;
+    color: {fg}; font-family: "{ICON_FONT}"; font-size: 13pt;
 }}
 .walwrite .search button.icon:hover {{ background-color: {mix(bg, fg, 0.1)}; }}
 .walwrite .search separator {{ background-color: {mix(bg, fg, 0.25)}; min-width: 1px; margin: 6px 4px; }}
+
 button.square {{
     border-radius: 0; box-shadow: none; text-shadow: none; background-image: none; outline: none;
     background-color: {mix(bg, fg, 0.07)}; border: 1px solid {mix(bg, fg, 0.2)};
@@ -305,12 +490,39 @@ button.square:focus-visible {{ border-color: {fg}; }}
 button.square.primary {{ background-color: {accent}; border-color: {accent}; }}
 button.square.primary label {{ color: {bg}; }}
 button.square.primary:hover {{ background-color: {mix(accent, fg, 0.1)}; }}
-button.square.primary:focus-visible {{ border-color: {fg}; }}
 button.square:disabled {{ opacity: 0.5; }}
 .walwrite-dialog .dialog-title {{ color: {fg}; font-weight: bold; font-size: 12pt; }}
 .walwrite-dialog .dialog-body {{ color: {fg}; font-size: 9.75pt; }}
-.walwrite scrollbar {{ background: none; border: none; }}
-.walwrite scrollbar slider {{ background-color: {mix(bg, fg, 0.3)}; border-radius: 0; min-width: 4px; }}
+.walwrite scrollbar, .walwrite-dialog scrollbar {{ background: none; border: none; }}
+.walwrite scrollbar slider {{ background-color: {mix(bg, fg, 0.3)}; border-radius: 0; min-width: 4px; min-height: 4px; }}
+"""
+
+
+def preview_css(p, font_size):
+    bg, fg, accent = p["background"], p["foreground"], p["accent"]
+    muted, line, raised = mix(bg, fg, 0.5), mix(bg, fg, 0.15), mix(bg, fg, 0.06)
+    px = round(font_size * 4 / 3)
+    return f"""
+html {{ background: {bg}; color: {fg}; }}
+body {{ font-family: "{FONT_FAMILY}", monospace; font-size: {px}px; line-height: 1.65;
+       max-width: 70ch; margin: 0 auto; padding: 42px 28px 200px 28px; overflow-wrap: anywhere; }}
+h1, h2, h3, h4, h5, h6 {{ line-height: 1.3; margin: 1.4em 0 0.5em 0; }}
+h1 {{ font-size: 1.7em; }} h2 {{ font-size: 1.4em; }} h3 {{ font-size: 1.2em; }}
+h1, h2 {{ border-bottom: 1px solid {line}; padding-bottom: 0.2em; }}
+body > :first-child {{ margin-top: 0; }}
+a {{ color: {accent}; }}
+code {{ background: {raised}; padding: 0.1em 0.3em; font-size: 0.92em; }}
+pre {{ background: {raised}; padding: 12px 14px; overflow-x: auto; border-left: 2px solid {line}; }}
+pre code {{ background: none; padding: 0; }}
+blockquote {{ margin: 0; padding: 0 1em; color: {muted}; border-left: 2px solid {accent}; }}
+hr {{ border: none; border-top: 1px solid {line}; margin: 2em 0; }}
+table {{ border-collapse: collapse; margin: 1em 0; }}
+th, td {{ border: 1px solid {line}; padding: 4px 10px; }}
+th {{ background: {raised}; }}
+img {{ max-width: 100%; }}
+ul, ol {{ padding-left: 1.6em; }}
+li > input[type=checkbox] {{ margin-right: 0.4em; accent-color: {accent}; }}
+::selection {{ background: {accent}; color: {bg}; }}
 """
 
 
@@ -331,7 +543,7 @@ def choice_dialog(parent, title, body, buttons, on_response, focus=None):
         getattr(box, f"set_margin_{side}")(20)
     heading = Gtk.Label(label=title, xalign=0)
     heading.add_css_class("dialog-title")
-    text = Gtk.Label(label=body, xalign=0, wrap=True, max_width_chars=52)
+    text = Gtk.Label(label=body, xalign=0, wrap=True, max_width_chars=60)
     text.add_css_class("dialog-body")
     row = Gtk.Box(spacing=8, halign=Gtk.Align.END, margin_top=8)
     widgets = {}
@@ -358,117 +570,785 @@ def choice_dialog(parent, title, body, buttons, on_response, focus=None):
     return dialog
 
 
-# ---------- window ----------
+# ---------- documents ----------
 
-class WriterWindow(Gtk.ApplicationWindow):
-    def __init__(self, app, path=None):
-        super().__init__(application=app, title="Walwrite")
-        self.set_decorated(False)
-        self.add_css_class("walwrite")
-        settings = read_settings()
-        self.set_default_size(settings.get("width", 1280), settings.get("height", 820))
-        if settings.get("maximized"):
-            self.maximize()
+class Document:
+    """One open file (or untitled draft): its buffer, highlighting, saving and outside changes.
 
-        self.file_path = None
+    The window owns the widgets; a document calls window.document_changed(self) when its title,
+    modified state or status line should be redrawn.
+    """
+
+    def __init__(self, window, tag_table, path=None, draft_id=None):
+        self.window = window
+        self.buffer = Gtk.TextBuffer(tag_table=tag_table)
+        self.buffer.set_enable_undo(True)
+        self.path = os.path.abspath(path) if path else None
+        self.draft_id = draft_id or uuid.uuid4().hex
         self.modified = False
         self.loading = False
-        self.last_text = ""
-        self.known_contents = None  # what the file on disk held when we last read or wrote it
-        self.close_confirmed = False
-        self.pending_action = ""
-        self.pending_open_path = None
-        self.search_open = False
-        self.search_matches = []
-        self.search_index = -1
+        self.status = ""
+        self.known_contents = None  # what the file held when we last read or wrote it
         self.monitor = None
         self.external_dialog = None
-        self.size = (1280, 820)
+        self.cursor = 0
+        self.scroll = 0.0
         self._timeouts = {}
         self._dirty_lines = None
         self._highlight_source = 0
-        self.recovery = Recovery()
+        self.buffer.connect("changed", self._on_changed)
+        self.buffer.connect_after("insert-text", self._on_insert_text)
+        self.buffer.connect_after("delete-range", self._on_delete_range)
+        self.buffer.connect("notify::cursor-position", lambda *_: self._remember_cursor())
+
+    # ----- names -----
+
+    def name(self):
+        return os.path.basename(self.path) if self.path else self.untitled_name()
+
+    def untitled_name(self):
+        first = self.text().split("\n", 1)[0].strip().lstrip("#").strip()
+        return (first[:40] or "Untitled") if not self.path else ""
+
+    def text(self):
+        start, end = self.buffer.get_bounds()
+        return self.buffer.get_text(start, end, True)
+
+    def is_empty_untitled(self):
+        return not self.path and self.buffer.get_char_count() == 0
+
+    # ----- timers -----
+
+    def debounce(self, name, ms, callback):
+        self.cancel(name)
+
+        def fire():
+            self._timeouts[name] = 0
+            callback()
+            return False
+
+        self._timeouts[name] = GLib.timeout_add(ms, fire)
+
+    def cancel(self, name):
+        if self._timeouts.get(name):
+            GLib.source_remove(self._timeouts[name])
+            self._timeouts[name] = 0
+
+    def dispose(self):
+        for name in list(self._timeouts):
+            self.cancel(name)
+        if self._highlight_source:
+            GLib.source_remove(self._highlight_source)
+            self._highlight_source = 0
+        self.unwatch()
+        if self.external_dialog:
+            self.external_dialog.destroy()
+
+    # ----- loading and editing -----
+
+    def set_text(self, text, modified=False):
+        self.loading = True
+        self.buffer.begin_irreversible_action()
+        self.buffer.set_text(text)
+        self.buffer.end_irreversible_action()
+        self.buffer.place_cursor(self.buffer.get_start_iter())
+        self.loading = False
+        self.highlight(full=True)
+        self.set_modified(modified)
+
+    def _remember_cursor(self):
+        self.cursor = self.buffer.get_iter_at_mark(self.buffer.get_insert()).get_offset()
+
+    def set_modified(self, modified):
+        if self.modified != modified:
+            self.modified = modified
+        self.window.document_changed(self)
+
+    def set_status(self, status):
+        self.status = status
+        self.window.document_changed(self)
+
+    def _on_changed(self, _buffer):
+        if self.loading:
+            return
+        self.modified = True
+        self.status = ""
+        if self.path:
+            self.debounce("autosave", AUTOSAVE_DELAY_MS, self.autosave)
+        else:
+            self.debounce("draft", 600, self.write_draft)
+        self.window.document_changed(self, edited=True)
+
+    # ----- highlighting -----
+
+    def _mark_dirty(self, first, last):
+        if self._dirty_lines:
+            first, last = min(first, self._dirty_lines[0]), max(last, self._dirty_lines[1])
+        self._dirty_lines = (first, last)
+        if not self._highlight_source:
+            # before the next redraw, so markers never flash unstyled
+            self._highlight_source = GLib.idle_add(self.highlight, priority=GLib.PRIORITY_HIGH_IDLE)
+
+    def _on_insert_text(self, _buffer, location, text, _length):
+        last = location.get_line()
+        self._mark_dirty(last - text.count("\n"), last)
+
+    def _on_delete_range(self, _buffer, start, _end):
+        line = start.get_line()
+        self._mark_dirty(line, line)
+
+    def highlight(self, full=False):
+        if self._highlight_source:
+            if full:
+                GLib.source_remove(self._highlight_source)
+            self._highlight_source = 0
+        lines = None if full else self._dirty_lines
+        self._dirty_lines = None
+        if lines:
+            start = self.buffer.get_iter_at_line(max(0, lines[0]))[1]
+            end = self.buffer.get_iter_at_line(lines[1])[1]
+            end.forward_line()
+        else:
+            start, end = self.buffer.get_bounds()
+        for name in SYNTAX_TAGS:
+            self.buffer.remove_tag_by_name(name, start, end)
+        if not is_markdown(self.path):
+            return False
+
+        # fenced code decides how the lines below it read, so check from the top
+        text = self.text()
+        offset = start.get_offset()
+        in_fence = len(re.findall(r"^\s*(```|~~~)", text[:offset], re.MULTILINE)) % 2 == 1
+        if in_fence and lines:
+            # an edit inside or around a fence can change everything after it
+            end = self.buffer.get_end_iter()
+        for line in self.buffer.get_text(start, end, True).split("\n"):
+            if re.match(r"^\s*(```|~~~)", line):
+                self._tag("code", offset, len(line))
+                in_fence = not in_fence
+            elif in_fence:
+                self._tag("code", offset, len(line))
+            elif line.strip():
+                self._highlight_line(line, offset)
+            offset += len(line) + 1
+        return False
+
+    def _tag(self, name, start, length):
+        if length > 0:
+            self.buffer.apply_tag_by_name(name, self.buffer.get_iter_at_offset(start),
+                                          self.buffer.get_iter_at_offset(start + length))
+
+    def _highlight_line(self, line, base):
+        first = len(line) - len(line.lstrip())
+        char = line[first]
+        if first == 0 and char == "#":
+            heading = re.match(r"^(#{1,6})(\s+)(.*)$", line)
+            if heading:
+                self._tag("marker", base, heading.end(2))
+                self._tag("heading", base + heading.start(3), len(heading.group(3)))
+                return
+        if char == ">":
+            quote = re.match(r"^(\s*>+\s?)(.*)$", line)
+            if quote:
+                self._tag("marker", base, len(quote.group(1)))
+                self._tag("quote", base + quote.start(2), len(quote.group(2)))
+        if char in "-+*" or char.isdigit():
+            item = re.match(r"^(\s*(?:[-+*]|\d+[.)])\s+(?:\[[ xX]\]\s+)?)(.*)$", line)
+            if item:
+                self._tag("marker", base, len(item.group(1)))
+        if char in "-*_" and re.match(r"^\s{0,3}([-*_])(?:\s*\1){2,}\s*$", line):
+            self._tag("marker", base, len(line))
+        if "`" in line:
+            for code in re.finditer(r"`([^`]+)`", line):
+                self._tag("code", base + code.start(), len(code.group()))
+        for kind, (start, length), markers in inline_markup(line):
+            self._tag(kind, base + start, length)
+            for marker_start, marker_length in markers:
+                self._tag("marker", base + marker_start, marker_length)
+
+    # ----- files -----
+
+    def load(self, path):
+        """Read path into the buffer. Returns False (and sets the status) if it can't be read."""
+        try:
+            with open(path, "rb") as f:
+                contents = f.read()
+        except OSError as e:
+            self.set_status(f"Could not open {os.path.basename(path)}: {e.strerror.lower()}")
+            return False
+        self.path = os.path.abspath(path)
+        self.known_contents = contents
+        self.set_text(contents.decode("utf-8", errors="replace"))
+        self.watch()
+        self.clear_draft()
+        return True
+
+    def save_to(self, path, quiet=False):
+        """Write the buffer to path. Returns True on success."""
+        contents = self.text().encode()
+        self.unwatch()  # our own write isn't an outside change
+        try:
+            atomic_write(path, contents)
+        except OSError as e:
+            self.watch()
+            self.set_status(f"Could not save {os.path.basename(path)}: {e.strerror.lower()}")
+            return False
+        self.cancel("autosave")
+        self.cancel("draft")
+        self.path = os.path.abspath(path)
+        self.known_contents = contents
+        self.watch()
+        self.clear_draft()
+        self.modified = False
+        self.status = "Saved" if quiet else f"Saved {self.name()}"
+        self.highlight(full=True)  # the file type may have changed
+        self.window.document_changed(self)
+        return True
+
+    def autosave(self):
+        if self.path and self.modified and not self.external_dialog:
+            if os.path.isdir(os.path.dirname(self.path)):
+                self.save_to(self.path, quiet=True)
+
+    def draft_path(self):
+        return os.path.join(DRAFTS_DIR, self.draft_id + ".json")
+
+    def write_draft(self):
+        """Untitled (or unsavable) text survives closing the window and crashes."""
+        if not self.modified:
+            return
+        try:
+            os.makedirs(DRAFTS_DIR, exist_ok=True)
+            atomic_write(self.draft_path(), json.dumps({"file": self.path or "", "text": self.text()}).encode())
+        except OSError:
+            pass
+
+    def clear_draft(self):
+        try:
+            os.remove(self.draft_path())
+        except FileNotFoundError:
+            pass
+
+    def restore_draft(self):
+        data = read_json(self.draft_path(), {})
+        if not isinstance(data.get("text"), str):
+            return False
+        if self.path:
+            try:
+                with open(self.path, "rb") as f:
+                    self.known_contents = f.read()
+            except OSError:
+                self.known_contents = None
+            self.watch()
+        self.set_text(data["text"], modified=True)
+        return True
+
+    # ----- outside changes -----
+
+    def unwatch(self):
+        self.cancel("external")
+        if self.monitor:
+            self.monitor.cancel()
+            self.monitor = None
+
+    def watch(self):
+        self.unwatch()
+        if self.path and os.path.exists(self.path):
+            self.monitor = Gio.File.new_for_path(self.path).monitor_file(Gio.FileMonitorFlags.WATCH_MOVES, None)
+            self.monitor.connect("changed", lambda *_: self.debounce("external", 250, self.check_external_change))
+
+    def check_external_change(self):
+        if not self.path or self.external_dialog:
+            return
+        deleted = not os.path.exists(self.path)
+        contents = None
+        if not deleted:
+            try:
+                with open(self.path, "rb") as f:
+                    contents = f.read()
+            except OSError:
+                return
+            if contents == self.known_contents:
+                return  # an atomic save replaced the file with what we already have
+        if not deleted and not self.modified:
+            # nothing of ours to lose: follow the file, like other editors do
+            cursor = self.cursor
+            self.known_contents = contents
+            self.set_text(contents.decode("utf-8", errors="replace"))
+            self.buffer.place_cursor(self.buffer.get_iter_at_offset(min(cursor, self.buffer.get_char_count())))
+            self.set_status("Reloaded from disk")
+            return
+        self.window.show_document(self)
+        if deleted:
+            body = f"{self.name()} was removed outside Walwrite. Keep your text as an unsaved document?"
+        else:
+            body = f"{self.name()} changed outside Walwrite. Reloading will discard your changes."
+
+        def respond(response):
+            self.external_dialog = None
+            if response == "reload" and not deleted:
+                self.load(self.path)
+                self.set_status("Reloaded from disk")
+            elif deleted:
+                # an untitled document now, so autosave doesn't quietly bring the file back
+                self.unwatch()
+                self.path = None
+                self.known_contents = None
+                self.modified = True
+                self.write_draft()
+                self.set_status("Kept as an unsaved document")
+            else:
+                try:
+                    with open(self.path, "rb") as f:
+                        self.known_contents = f.read()
+                except OSError:
+                    self.known_contents = None
+                self.cancel("autosave")  # don't overwrite their version until the next edit
+                self.modified = True
+                self.watch()
+                self.write_draft()
+                self.set_status("Kept your version")
+
+        self.external_dialog = choice_dialog(
+            self.window, "File removed" if deleted else "File changed", body,
+            [("Keep Mine", "keep", deleted, True), ("Reload", "reload", not deleted, not deleted)],
+            respond, focus="keep" if deleted else "reload")
+
+
+# ---------- widgets ----------
+
+class Editor(Gtk.TextView):
+    """The writing column: about 72 characters wide and centered, with equal room on both sides."""
+
+    def __init__(self):
+        super().__init__(wrap_mode=Gtk.WrapMode.WORD_CHAR, bottom_margin=240,
+                         pixels_below_lines=LINE_GAP, pixels_inside_wrap=LINE_GAP)
+        self.add_css_class("editor")
+        self._last_width = 0
+
+    def do_size_allocate(self, width, height, baseline):
+        if width != self._last_width:
+            self._last_width = width
+            self.update_margins(width, height)
+        Gtk.TextView.do_size_allocate(self, width, height, baseline)
+
+    def update_margins(self, width=None, height=None):
+        width = width or self.get_width()
+        height = height or self.get_height()
+        if not width:
+            return
+        layout = self.create_pango_layout("0" * 50)
+        char = layout.get_pixel_size()[0] / 50
+        column = round(char * 72)
+        gutter = max(16, min(round(char * 3), width // 12))  # small windows keep a thin, even edge
+        side = max(gutter, (width - column) // 2)
+        self.set_left_margin(side)
+        self.set_right_margin(side)
+        self.set_top_margin(max(28, round(height * 0.04)) if height else 36)
+
+
+class Sidebar(Gtk.Box):
+    """Open documents on top, and a folder's text files below."""
+
+    def __init__(self, window):
+        # hexpand=False explicitly, or the expanding labels inside make it take half the window
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, width_request=240, hexpand=False)
+        self.add_css_class("sidebar")
+        self.window = window
+        self.folder = None
+        self.rows = {}
+
+        header = Gtk.Box()
+        header.append(Gtk.Label(label="OPEN", xalign=0, hexpand=True, css_classes=["section"]))
+        new = Gtk.Button(label="", tooltip_text="New document (Ctrl+N)", valign=Gtk.Align.END)
+        new.connect("clicked", lambda _b: window.activate_action("win.new-document"))
+        header.append(new)
+        self.append(header)
+        self.documents = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
+        self.documents.connect("row-activated", lambda _l, row: window.show_document(row.document))
+        self.append(self.documents)
+
+        folder_header = Gtk.Box()
+        self.folder_label = Gtk.Label(label="FILES", xalign=0, hexpand=True, css_classes=["section"],
+                                      ellipsize=Pango.EllipsizeMode.START)
+        folder_header.append(self.folder_label)
+        for glyph, tip, action in (("", "Parent folder", self.go_up),
+                                   ("", "Open folder (Ctrl+Shift+O)", lambda: window.activate_action("win.open-folder"))):
+            button = Gtk.Button(label=glyph, tooltip_text=tip, valign=Gtk.Align.END)
+            button.connect("clicked", lambda _b, a=action: a())
+            folder_header.append(button)
+        self.append(folder_header)
+
+        self.tree = None
+        factory = Gtk.SignalListItemFactory()
+        factory.connect("setup", self._setup_item)
+        factory.connect("bind", self._bind_item)
+        self.file_view = Gtk.ListView(factory=factory, single_click_activate=True)
+        self.file_view.connect("activate", self._activate_file)
+        scroller = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER, child=self.file_view)
+        self.append(scroller)
+
+    # ----- open documents -----
+
+    def refresh_documents(self, documents, current):
+        existing = {id(doc) for doc in documents}
+        for key in [k for k in self.rows if k not in existing]:
+            self.documents.remove(self.rows.pop(key))
+        for index, doc in enumerate(documents):
+            row = self.rows.get(id(doc))
+            if row is None:
+                row = Gtk.ListBoxRow()
+                row.document = doc
+                box = Gtk.Box(spacing=6)
+                row.dot = Gtk.Label(label="●", css_classes=["dim"])
+                row.title = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END)
+                close = Gtk.Button(label="", tooltip_text="Close (Ctrl+W)")
+                close.connect("clicked", lambda _b, d=doc: self.window.close_document(d))
+                box.append(row.title)
+                box.append(row.dot)
+                box.append(close)
+                row.set_child(box)
+                self.rows[id(doc)] = row
+                self.documents.insert(row, index)
+            elif row.get_index() != index:
+                self.documents.remove(row)
+                self.documents.insert(row, index)
+            row.title.set_label(doc.name())
+            row.set_tooltip_text(short_path(doc.path) if doc.path else "Not saved yet")
+            row.dot.set_opacity(1 if doc.modified and not doc.path else 0.6 if doc.modified else 0)
+        if current is not None and id(current) in self.rows:
+            self.documents.select_row(self.rows[id(current)])
+
+    # ----- folder tree -----
+
+    def set_folder(self, folder):
+        if not folder or not os.path.isdir(folder) or folder == self.folder:
+            return
+        self.folder = folder
+        self.folder_label.set_label(os.path.basename(folder.rstrip("/")) or "/")
+        self.folder_label.set_tooltip_text(short_path(folder))
+        root = self._directory_model(Gio.File.new_for_path(folder))
+        self.tree = Gtk.TreeListModel.new(root, False, False, self._children)
+        self.file_view.set_model(Gtk.NoSelection(model=self.tree))
+
+    def go_up(self):
+        if self.folder:
+            self.set_folder(os.path.dirname(self.folder.rstrip("/")) or "/")
+            self.window.save_session_soon()
+
+    @staticmethod
+    def _directory_model(directory):
+        listing = Gtk.DirectoryList(file=directory, attributes="standard::name,standard::type,standard::is-hidden")
+
+        def visible(info):
+            name = info.get_name()
+            if info.get_is_hidden() or name.startswith(".") or name in ("node_modules", "__pycache__"):
+                return False
+            return info.get_file_type() == Gio.FileType.DIRECTORY or is_text_file(name)
+
+        filtered = Gtk.FilterListModel(model=listing, filter=Gtk.CustomFilter.new(visible))
+
+        def order(a, b, _data):
+            a_dir = a.get_file_type() == Gio.FileType.DIRECTORY
+            b_dir = b.get_file_type() == Gio.FileType.DIRECTORY
+            if a_dir != b_dir:
+                return -1 if a_dir else 1
+            return (a.get_name().lower() > b.get_name().lower()) - (a.get_name().lower() < b.get_name().lower())
+
+        return Gtk.SortListModel(model=filtered, sorter=Gtk.CustomSorter.new(order, None))
+
+    def _children(self, info):
+        if info.get_file_type() != Gio.FileType.DIRECTORY:
+            return None
+        return self._directory_model(info.get_attribute_object("standard::file"))
+
+    @staticmethod
+    def _setup_item(_factory, item):
+        expander = Gtk.TreeExpander()
+        box = Gtk.Box(spacing=6)
+        icon = Gtk.Label(css_classes=["dim"])
+        icon.set_attributes(Pango.AttrList.from_string(f'0 -1 font-desc "{ICON_FONT}"'))
+        name = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, hexpand=True)
+        box.append(icon)
+        box.append(name)
+        expander.set_child(box)
+        item.set_child(expander)
+
+    def _bind_item(self, _factory, item):
+        row = item.get_item()
+        info = row.get_item()
+        expander = item.get_child()
+        expander.set_list_row(row)
+        icon, name = expander.get_child().get_first_child(), expander.get_child().get_last_child()
+        is_dir = info.get_file_type() == Gio.FileType.DIRECTORY
+        icon.set_label(("" if not row.get_expanded() else "") if is_dir else "")
+        name.set_label(info.get_name())
+
+    def _activate_file(self, _view, position):
+        row = self.tree.get_item(position)
+        info = row.get_item()
+        if info.get_file_type() == Gio.FileType.DIRECTORY:
+            row.set_expanded(not row.get_expanded())
+            self.file_view.get_model().items_changed(position, 1, 1)  # redraw the folder icon
+        else:
+            path = info.get_attribute_object("standard::file").get_path()
+            if path:
+                self.window.open_path(path)
+
+
+class Preview(Gtk.Box):
+    """Rendered Markdown: WebKitGTK when it's installed, otherwise a plain GTK rendering."""
+
+    def __init__(self, window):
+        super().__init__(hexpand=True, vexpand=True)
+        self.window = window
+        self.pending = None
+        if WebKit:
+            settings = WebKit.Settings(enable_javascript=True, enable_developer_extras=False,
+                                       allow_file_access_from_file_urls=True)
+            self.web = WebKit.WebView(settings=settings, hexpand=True, vexpand=True)
+            self.web.set_background_color(Gdk.RGBA())
+            self.web.connect("decide-policy", self._decide_policy)
+            self.append(self.web)
+            self.text = None
+        else:
+            self.web = None
+            self.text = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR,
+                                     pixels_below_lines=LINE_GAP, pixels_inside_wrap=4,
+                                     left_margin=48, right_margin=48, top_margin=36, bottom_margin=200)
+            self.text.add_css_class("preview")
+            self.append(Gtk.ScrolledWindow(child=self.text, hexpand=True, vexpand=True,
+                                           hscrollbar_policy=Gtk.PolicyType.NEVER))
+
+    def render(self, document, palette, font_size):
+        text = document.text()
+        if self.web:
+            body = markdown_to_html(text) if is_markdown(document.path) else f"<pre>{html.escape(text)}</pre>"
+            page = (f"<!doctype html><html><head><meta charset='utf-8'><style>{preview_css(palette, font_size)}"
+                    f"</style></head><body>{body}</body></html>")
+            base = Gio.File.new_for_path(os.path.dirname(document.path)).get_uri() + "/" if document.path else None
+            # keep the scroll position across re-renders
+            self.web.evaluate_javascript("window.scrollY", -1, None, None, None, self._reload, (page, base))
+        else:
+            buffer = self.text.get_buffer()
+            buffer.set_text("")
+            markup = markdown_to_pango(text) if is_markdown(document.path) else escape_markup(text)
+            buffer.insert_markup(buffer.get_start_iter(), markup, -1)
+
+    def _reload(self, web, result, page_and_base):
+        page, base = page_and_base
+        try:
+            scroll = web.evaluate_javascript_finish(result).to_double()
+        except (GLib.Error, AttributeError):
+            scroll = 0
+        web.load_html(page.replace("</body>", f"<script>window.scrollTo(0,{scroll})</script></body>"), base)
+
+    def _decide_policy(self, _web, decision, decision_type):
+        if decision_type != WebKit.PolicyDecisionType.NAVIGATION_ACTION:
+            return False
+        action = decision.get_navigation_action()
+        uri = action.get_request().get_uri()
+        if action.get_navigation_type() == WebKit.NavigationType.LINK_CLICKED:
+            decision.ignore()
+            try:
+                if uri.startswith("file://") and is_text_file(Gio.File.new_for_uri(uri).get_path() or ""):
+                    self.window.open_path(Gio.File.new_for_uri(uri).get_path())
+                else:
+                    Gio.AppInfo.launch_default_for_uri(uri, None)
+            except GLib.Error:
+                pass
+            return True
+        return False
+
+
+# ---------- window ----------
+
+MENUS = [
+    ("_File", [
+        [("New Document", "win.new-document"), ("New Window", "app.new-window")],
+        [("Open…", "win.open"), ("Open Folder…", "win.open-folder")],
+        [("Save", "win.save"), ("Save As…", "win.save-as"), ("Rename…", "win.rename")],
+        [("Print…", "win.print")],
+        [("Close Document", "win.close-document"), ("Close Window", "win.close-window"), ("Quit", "app.quit")],
+    ]),
+    ("_Edit", [
+        [("Undo", "win.undo"), ("Redo", "win.redo")],
+        [("Cut", "win.cut"), ("Copy", "win.copy"), ("Paste", "win.paste"), ("Select All", "win.select-all")],
+        [("Find…", "win.find"), ("Find and Replace…", "win.replace")],
+    ]),
+    ("F_ormat", [
+        [("Bold", "win.bold"), ("Italic", "win.italic"), ("Inline Code", "win.code"), ("Link", "win.link")],
+        [("Heading 1", "win.heading::1"), ("Heading 2", "win.heading::2"), ("Heading 3", "win.heading::3")],
+        [("Bulleted List", "win.bullets"), ("Numbered List", "win.numbers"), ("Task List", "win.tasks"),
+         ("Quote", "win.quote")],
+    ]),
+    ("_View", [
+        [("Sidebar", "win.sidebar"), ("Rendered Markdown", "win.preview"), ("Side by Side", "win.split")],
+        [("Bigger Text", "win.zoom-in"), ("Smaller Text", "win.zoom-out"), ("Reset Text Size", "win.zoom-reset")],
+        [("Next Document", "win.next-document"), ("Previous Document", "win.previous-document")],
+        [("Fullscreen", "win.fullscreen")],
+    ]),
+    ("_Help", [
+        [("Keyboard Shortcuts", "win.shortcuts"), ("About Walwrite", "win.about")],
+    ]),
+]
+
+ACCELS = {
+    "win.new-document": ["<Control>n"], "app.new-window": ["<Control><Shift>n"],
+    "win.open": ["<Control>o"], "win.open-folder": ["<Control><Shift>o"],
+    "win.save": ["<Control>s"], "win.save-as": ["<Control><Shift>s"], "win.print": ["<Control>p"],
+    "win.close-document": ["<Control>w"], "win.close-window": ["<Control><Shift>w"], "app.quit": ["<Control>q"],
+    "win.undo": ["<Control>z"], "win.redo": ["<Control><Shift>z", "<Control>y"],
+    "win.find": ["<Control>f"], "win.replace": ["<Control>h"],
+    "win.bold": ["<Control>b"], "win.italic": ["<Control>i"], "win.link": ["<Control>k"],
+    "win.code": ["<Control>grave"],
+    "win.heading::1": ["<Control>1"], "win.heading::2": ["<Control>2"], "win.heading::3": ["<Control>3"],
+    "win.sidebar": ["<Control>backslash"], "win.preview": ["<Control>e"], "win.split": ["<Control><Shift>e"],
+    "win.zoom-in": ["<Control>equal", "<Control>plus"], "win.zoom-out": ["<Control>minus"],
+    "win.zoom-reset": ["<Control>0"],
+    "win.next-document": ["<Control>Tab", "<Control>Page_Down"],
+    "win.previous-document": ["<Control><Shift>Tab", "<Control>Page_Up", "<Control><Shift>ISO_Left_Tab"],
+    "win.fullscreen": ["F11"], "win.shortcuts": ["<Control>question", "<Control>slash"],
+    # these three are the text view's own; listing them only shows the keys in the menu
+    "win.cut": ["<Control>x"], "win.copy": ["<Control>c"], "win.select-all": ["<Control>a"],
+    "win.paste": ["<Control>v"],
+}
+
+
+def build_menu_model():
+    model = Gio.Menu()
+    for title, sections in MENUS:
+        menu = Gio.Menu()
+        for section in sections:
+            part = Gio.Menu()
+            for label, action in section:
+                item = Gio.MenuItem.new(label, None)
+                name, _, target = action.partition("::")
+                if target:
+                    item.set_action_and_target_value(name, GLib.Variant("s", target))
+                else:
+                    item.set_detailed_action(name)
+                part.append_item(item)
+            menu.append_section(None, part)
+        model.append_submenu(title, menu)
+    return model
+
+
+class WriterWindow(Gtk.ApplicationWindow):
+    def __init__(self, app, state=None):
+        super().__init__(application=app, title="Walwrite")
+        self.set_decorated(False)
+        self.add_css_class("walwrite")
+        self.app = app
+        state = state or {}
+        settings = read_settings()
+        self.set_default_size(state.get("width") or settings.get("width", 1100),
+                              state.get("height") or settings.get("height", 760))
+        if state.get("maximized"):
+            self.maximize()
+
+        self.documents = []
+        self.current = None
+        self.font_size = float(state.get("font_size") or settings.get("font_size", 14))
+        self.search_open = False
+        self.search_matches = []
+        self.search_index = -1
+        self.mode = "edit"  # edit, preview, or split
+        self.closing = False
         self.palette = load_palette()
+        self._alt_alone = False
+        self._timeouts = {}
 
+        self.tag_table = Gtk.TextTagTable()
+        self._create_tags()
         self.css = Gtk.CssProvider()
-        Gtk.StyleContext.add_provider_for_display(
-            Gdk.Display.get_default(), self.css, Gtk.STYLE_PROVIDER_PRIORITY_USER + 100)
-
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.css,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_USER + 100)
         self._build()
+        self._add_actions()
         self._apply_theme()
 
         self.theme_monitor = Gio.File.new_for_path(WAL_DIR).monitor_directory(Gio.FileMonitorFlags.NONE, None)
         self.theme_monitor.connect("changed", self._on_wal_changed)
         self.connect("close-request", self._on_close_request)
+        self.connect("notify::is-active", lambda *_: self._on_focus_change())
 
-        recovered = self._restore_recovery()
-        if path and not recovered:
-            self.open_path(path)
-        self._update_title()
+        self.sidebar_revealer.set_reveal_child(state.get("sidebar", settings.get("sidebar", False)))
+        # without a remembered folder, the first file opened decides it (see show_document)
+        self.sidebar.set_folder(state.get("folder") or settings.get("folder"))
 
     # ----- layout -----
 
     def _build(self):
-        overlay = Gtk.Overlay()
-        self.set_child(overlay)
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.set_child(root)
 
-        self.scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
-        overlay.set_child(self.scroller)
-        self.view = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, bottom_margin=220)
-        self.view.add_css_class("editor")
+        self.menubar = Gtk.PopoverMenuBar.new_from_model(build_menu_model())
+        self.menubar_revealer = Gtk.Revealer(child=self.menubar, reveal_child=False,
+                                             transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN,
+                                             transition_duration=120)
+        root.append(self.menubar_revealer)
+
+        body = Gtk.Box(vexpand=True)
+        root.append(body)
+        self.sidebar = Sidebar(self)
+        self.sidebar_revealer = Gtk.Revealer(child=self.sidebar, transition_duration=150,
+                                             transition_type=Gtk.RevealerTransitionType.SLIDE_RIGHT)
+        self.sidebar_revealer.connect("notify::reveal-child", lambda *_: self._sync_toggles())
+        body.append(self.sidebar_revealer)
+
+        overlay = Gtk.Overlay(hexpand=True)
+        body.append(overlay)
+        self.panes = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL, wide_handle=False,
+                               shrink_start_child=False, shrink_end_child=False)
+        overlay.set_child(self.panes)
+
+        self.scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, hexpand=True)
+        self.view = Editor()
         self.scroller.set_child(self.view)
-        self.buffer = self.view.get_buffer()
-        self.buffer.set_enable_undo(True)
-        self._create_tags()
-        self.buffer.connect("changed", self._on_buffer_changed)
-        self.buffer.connect_after("insert-text", self._on_insert_text)
-        self.buffer.connect_after("delete-range", self._on_delete_range)
-
-        # an empty drawing area over everything reports the window size for the text column
-        sizer = Gtk.DrawingArea(can_target=False)
-        sizer.set_size_request(720, 520)
-        sizer.connect("resize", lambda _area, w, h: self._layout_column(w, h))
-        overlay.add_overlay(sizer)
-        overlay.set_measure_overlay(sizer, True)
+        self.panes.set_start_child(self.scroller)
+        self.preview = Preview(self)
+        self.preview.set_visible(False)
+        self.panes.set_end_child(self.preview)
 
         self.placeholder = Gtk.Label(label="# Start writing", can_target=False,
                                      halign=Gtk.Align.START, valign=Gtk.Align.START)
         self.placeholder.add_css_class("placeholder")
         overlay.add_overlay(self.placeholder)
-
-        footer = Gtk.Box(valign=Gtk.Align.END, margin_start=12, margin_end=12, margin_bottom=10)
-        status_row = Gtk.Box(spacing=12)
-        status_row.add_css_class("footer-status")
-        save_button = Gtk.Button(label="", tooltip_text="Save", focusable=False)
-        save_button.connect("clicked", lambda _b: self.save())
-        open_button = Gtk.Button(label="", tooltip_text="Open", focusable=False)
-        open_button.connect("clicked", lambda _b: self.open_dialog())
-        self.status_label = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, max_width_chars=40)
-        status_row.append(save_button)
-        status_row.append(open_button)
-        status_row.append(self.status_label)
-        self.words_label = Gtk.Label(label="0 Words", hexpand=True, xalign=1)
-        self.words_label.add_css_class("words")
-        footer.append(status_row)
-        footer.append(self.words_label)
-        overlay.add_overlay(footer)
+        self.view.connect("notify::left-margin", lambda *_: self._place_placeholder())
+        self.view.connect("notify::top-margin", lambda *_: self._place_placeholder())
+        self.view.connect("notify::has-focus", lambda *_: self._update_placeholder())
 
         self.search_pane = self._build_search()
         overlay.add_overlay(self.search_pane)
 
-        # hide the placeholder while the editor has focus (focus controllers miss the initial focus)
-        self.view.connect("notify::has-focus", lambda *_: self._update_placeholder())
-        self.connect("notify::is-active", lambda *_: self._update_placeholder())
+        footer = Gtk.Box(spacing=4, css_classes=["footer"])
+        self.sidebar_button = self._footer_button("", "Sidebar (Ctrl+\\)", "win.sidebar")
+        footer.append(self.sidebar_button)
+        footer.append(self._footer_button("", "Save (Ctrl+S)", "win.save"))
+        footer.append(self._footer_button("", "Open (Ctrl+O)", "win.open"))
+        self.status_label = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END, margin_start=8)
+        footer.append(self.status_label)
+        self.words_label = Gtk.Label(label="0 words", margin_end=8)
+        footer.append(self.words_label)
+        self.preview_button = self._footer_button("", "Rendered Markdown (Ctrl+E)", "win.preview")
+        footer.append(self.preview_button)
+        root.append(footer)
 
-        window_keys = Gtk.EventControllerKey()
-        window_keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        window_keys.connect("key-pressed", self._on_window_key)
-        self.add_controller(window_keys)
-
-        editor_keys = Gtk.EventControllerKey()
-        editor_keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self._on_key_pressed)
+        keys.connect("key-released", self._on_key_released)
+        self.add_controller(keys)
+        editor_keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
         editor_keys.connect("key-pressed", self._on_editor_key)
         self.view.add_controller(editor_keys)
+        click = Gtk.GestureClick(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        click.connect("pressed", lambda *_: self._hide_menubar_unless_open())
+        self.view.add_controller(click)
+
+    def _footer_button(self, glyph, tooltip, action):
+        button = Gtk.Button(label=glyph, tooltip_text=tooltip, focusable=False, action_name=action)
+        return button
 
     def _build_search(self):
         pane = Gtk.Box(spacing=8, valign=Gtk.Align.START, visible=False,
@@ -480,15 +1360,10 @@ class WriterWindow(Gtk.ApplicationWindow):
         self.find_entry.connect("changed", lambda _e: self.update_search())
         fields.append(self.find_entry)
         fields.append(self.replace_entry)
-
-        find_keys = Gtk.EventControllerKey()
-        find_keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        find_keys.connect("key-pressed", self._on_find_key)
-        self.find_entry.add_controller(find_keys)
-        replace_keys = Gtk.EventControllerKey()
-        replace_keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        replace_keys.connect("key-pressed", self._on_replace_key)
-        self.replace_entry.add_controller(replace_keys)
+        for entry, handler in ((self.find_entry, self._on_find_key), (self.replace_entry, self._on_replace_key)):
+            keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+            keys.connect("key-pressed", handler)
+            entry.add_controller(keys)
 
         self.count_label = Gtk.Label(label="0/0")
         self.count_label.add_css_class("count")
@@ -498,14 +1373,13 @@ class WriterWindow(Gtk.ApplicationWindow):
         self.replace_all_button = Gtk.Button(label="All", visible=False, valign=Gtk.Align.CENTER)
         self.replace_all_button.add_css_class("square")
         self.replace_all_button.connect("clicked", lambda _b: self.replace_all())
-
         pane.append(fields)
         pane.append(self.count_label)
         pane.append(self.replace_button)
         pane.append(self.replace_all_button)
         pane.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
-        for glyph, tooltip, action in (("", "Previous match", lambda: self.move_search(-1)),
-                                       ("", "Next match", lambda: self.move_search(1)),
+        for glyph, tooltip, action in (("", "Previous match", lambda: self.move_search(-1)),
+                                       ("", "Next match", lambda: self.move_search(1)),
                                        ("", "Close", self.close_search)):
             button = Gtk.Button(label=glyph, tooltip_text=tooltip, valign=Gtk.Align.CENTER)
             button.add_css_class("icon")
@@ -513,63 +1387,78 @@ class WriterWindow(Gtk.ApplicationWindow):
             pane.append(button)
         return pane
 
-    def _layout_column(self, width, height):
-        # a centered column about 65 characters wide, as in Omawrite
-        self.size = (width, height)
-        layout = self.view.create_pango_layout("0" * 50)
-        char = layout.get_pixel_size()[0] / 50
-        column = min(round(char * 65), max(360, width - round(char * 20)))
-        side = max(24, (width - column) // 2)
-        top = max(42, round(height * 0.05))
-        self.view.set_left_margin(side)
-        self.view.set_right_margin(side)
-        self.view.set_top_margin(top)
-        self.placeholder.set_margin_start(side)
-        self.placeholder.set_margin_top(top)
-
-    # ----- theme -----
+    def _add_actions(self):
+        simple = {
+            "new-document": lambda: self.new_document(), "open": self.open_dialog,
+            "open-folder": self.open_folder_dialog, "save": lambda: self.save(), "save-as": lambda: self.save_as(),
+            "rename": self.rename, "print": self.print_document, "close-document": lambda: self.close_document(),
+            "close-window": self.close, "undo": lambda: self._buffer_do("undo"), "redo": lambda: self._buffer_do("redo"),
+            "cut": lambda: self.view.emit("cut-clipboard"), "copy": lambda: self.view.emit("copy-clipboard"),
+            "paste": self.paste, "select-all": lambda: self.view.emit("select-all", True),
+            "find": lambda: self.open_search(False), "replace": lambda: self.open_search(True),
+            "bold": lambda: self.wrap_selection("**", "**"), "italic": lambda: self.wrap_selection("*", "*"),
+            "code": lambda: self.wrap_selection("`", "`"), "link": self.insert_link,
+            "bullets": lambda: self.prefix_lines("- "), "numbers": lambda: self.prefix_lines("1. "),
+            "tasks": lambda: self.prefix_lines("- [ ] "), "quote": lambda: self.prefix_lines("> "),
+            "sidebar": self.toggle_sidebar, "preview": lambda: self.set_mode("edit" if self.mode == "preview" else "preview"),
+            "split": lambda: self.set_mode("edit" if self.mode == "split" else "split"),
+            "zoom-in": lambda: self.zoom(1), "zoom-out": lambda: self.zoom(-1), "zoom-reset": lambda: self.zoom(0),
+            "next-document": lambda: self.cycle_document(1), "previous-document": lambda: self.cycle_document(-1),
+            "fullscreen": lambda: self.unfullscreen() if self.is_fullscreen() else self.fullscreen(),
+            "shortcuts": self.show_shortcuts, "about": self.show_about,
+        }
+        for name, callback in simple.items():
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", lambda _a, _p, c=callback: (self._hide_menubar(), c()))
+            self.add_action(action)
+        heading = Gio.SimpleAction.new("heading", GLib.VariantType.new("s"))
+        heading.connect("activate", lambda _a, level: (self._hide_menubar(), self.set_heading(int(level.get_string()))))
+        self.add_action(heading)
 
     def _create_tags(self):
-        table_order = ("body",) + SYNTAX_TAGS[:-1] + ("search", "current-search", "hidden")
-        self.tags = {name: self.buffer.create_tag(name) for name in table_order}
-        body = self.tags["body"]
-        if body.find_property("line-height"):
-            body.set_property("line-height", 1.4)
-        else:
-            body.set_property("pixels-inside-wrap", 6)
-            body.set_property("pixels-below-lines", 6)
-        self.tags["heading"].set_property("weight", Pango.Weight.BOLD)
-        self.tags["bold"].set_property("weight", Pango.Weight.BOLD)
-        self.tags["italic"].set_property("style", Pango.Style.ITALIC)
-        self.tags["quote"].set_property("style", Pango.Style.ITALIC)
-        self.tags["link"].set_property("underline", Pango.Underline.SINGLE)
-        self.tags["hidden"].set_property("invisible", True)
+        for name in SYNTAX_TAGS + ("search", "current-search"):
+            self.tag_table.add(Gtk.TextTag(name=name))
+        self.tag_table.lookup("heading").set_property("weight", Pango.Weight.BOLD)
+        self.tag_table.lookup("bold").set_property("weight", Pango.Weight.BOLD)
+        self.tag_table.lookup("italic").set_property("style", Pango.Style.ITALIC)
+        self.tag_table.lookup("quote").set_property("style", Pango.Style.ITALIC)
+        self.tag_table.lookup("link").set_property("underline", Pango.Underline.SINGLE)
+
+    # ----- theme -----
 
     def _apply_theme(self):
         p = self.palette
         bg, fg, accent = p["background"], p["foreground"], p["accent"]
-        self.css.load_from_string(theme_css(p))
-        marker = mix(bg, fg, 0.35)
-        self.tags["marker"].set_property("foreground", marker)
-        self.tags["quote"].set_property("foreground", marker)
-        self.tags["code"].set_property("background", mix(bg, fg, 0.08))
-        self.tags["link"].set_property("foreground", accent)
-        self.tags["search"].set_property("background", mix(bg, accent, 0.45))
-        self.tags["current-search"].set_property("background", accent)
-        self.tags["current-search"].set_property("foreground", bg)
-        self._layout_column(*self.size)
+        self.css.load_from_string(theme_css(p, self.font_size))
+        marker = mix(bg, fg, 0.38)
+        self.tag_table.lookup("marker").set_property("foreground", marker)
+        self.tag_table.lookup("quote").set_property("foreground", mix(bg, fg, 0.7))
+        self.tag_table.lookup("code").set_property("background", mix(bg, fg, 0.08))
+        self.tag_table.lookup("link").set_property("foreground", accent)
+        self.tag_table.lookup("search").set_property("background", mix(bg, accent, 0.45))
+        self.tag_table.lookup("current-search").set_property("background", accent)
+        self.tag_table.lookup("current-search").set_property("foreground", bg)
+        GLib.idle_add(lambda: self.view.update_margins() or False)
+        if self.mode != "edit":
+            self.refresh_preview()
 
     def _on_wal_changed(self, _monitor, file, _other, _event):
         if file.get_basename() == "colors.json":
-            self._debounce("theme", 150, self._reload_theme)
+            self.debounce("theme", 150, self._reload_theme)
 
     def _reload_theme(self):
         self.palette = load_palette()
         self._apply_theme()
 
+    def zoom(self, direction):
+        self.font_size = 14 if direction == 0 else max(8, min(32, self.font_size + direction))
+        self._apply_theme()
+        update_settings(font_size=self.font_size)
+        self.save_session_soon()
+
     # ----- helpers -----
 
-    def _debounce(self, name, ms, callback):
+    def debounce(self, name, ms, callback):
         if self._timeouts.get(name):
             GLib.source_remove(self._timeouts[name])
 
@@ -580,14 +1469,12 @@ class WriterWindow(Gtk.ApplicationWindow):
 
         self._timeouts[name] = GLib.timeout_add(ms, fire)
 
-    def _cancel(self, name):
-        if self._timeouts.get(name):
-            GLib.source_remove(self._timeouts[name])
-            self._timeouts[name] = 0
+    @property
+    def buffer(self):
+        return self.current.buffer
 
     def text(self):
-        start, end = self.buffer.get_bounds()
-        return self.buffer.get_text(start, end, True)
+        return self.current.text()
 
     def _cursor(self):
         return self.buffer.get_iter_at_mark(self.buffer.get_insert()).get_offset()
@@ -601,6 +1488,65 @@ class WriterWindow(Gtk.ApplicationWindow):
 
     def _iter(self, offset):
         return self.buffer.get_iter_at_offset(offset)
+
+    def _buffer_do(self, what):
+        if self.view.has_focus() or not self.search_open:
+            getattr(self.buffer, what)()
+            self.view.scroll_mark_onscreen(self.buffer.get_insert())
+
+    # ----- menu bar and keys -----
+
+    def _show_menubar(self):
+        self.menubar_revealer.set_reveal_child(True)
+
+    def _hide_menubar(self):
+        self.menubar_revealer.set_reveal_child(False)
+
+    def _hide_menubar_unless_open(self):
+        self._hide_menubar()
+
+    def _on_key_pressed(self, _controller, keyval, _keycode, state):
+        if keyval in (Gdk.KEY_Alt_L, Gdk.KEY_Alt_R):
+            self._alt_alone = True
+            return False
+        self._alt_alone = False
+        if keyval == Gdk.KEY_Escape and self.menubar_revealer.get_reveal_child():
+            self._hide_menubar()
+            self.view.grab_focus()
+            return True
+        return False
+
+    def _on_key_released(self, _controller, keyval, _keycode, state):
+        if keyval in (Gdk.KEY_Alt_L, Gdk.KEY_Alt_R) and self._alt_alone:
+            self._alt_alone = False
+            if self.menubar_revealer.get_reveal_child():
+                self._hide_menubar()
+                self.view.grab_focus()
+            else:
+                self._show_menubar()
+                # let the keyboard walk the menus right away, like pressing F10
+                GLib.idle_add(lambda: self.menubar.get_first_child() and
+                              self.menubar.get_first_child().grab_focus() and False)
+
+    def _on_editor_key(self, _controller, keyval, _keycode, state):
+        mods = state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK
+                        | Gdk.ModifierType.SUPER_MASK | Gdk.ModifierType.META_MASK)
+        shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
+        if mods:
+            if mods == Gdk.ModifierType.CONTROL_MASK and Gdk.keyval_to_lower(keyval) == Gdk.KEY_v and not shift:
+                self.paste()
+                return True
+            return False
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and not shift:
+            return self.continue_list()
+        if keyval == Gdk.KEY_Tab and not shift:
+            return self.indent_list_item(1)
+        if keyval == Gdk.KEY_ISO_Left_Tab or (keyval == Gdk.KEY_Tab and shift):
+            return self.indent_list_item(-1)
+        return False
+
+
+    # ----- editing -----
 
     def replace_range(self, start, end, replacement, select=None):
         """Replace [start, end) as one undo step; select=(from, to) offsets inside the replacement."""
@@ -629,14 +1575,21 @@ class WriterWindow(Gtk.ApplicationWindow):
 
         self.get_clipboard().read_text_async(None, finish)
 
-    # ----- editing -----
-
     def wrap_selection(self, before, after):
+        self.set_mode("edit" if self.mode == "preview" else self.mode)
         self.view.grab_focus()
         start, end = self._selection()
         selected = self.text()[start:end]
-        self.replace_range(start, end, before + selected + after,
-                           (len(before), len(before) + len(selected)))
+        # already wrapped: unwrap, so the shortcut toggles like in other editors
+        text = self.text()
+        if selected.startswith(before) and selected.endswith(after) and len(selected) >= len(before + after):
+            self.replace_range(start, end, selected[len(before):len(selected) - len(after)],
+                               (0, len(selected) - len(before) - len(after)))
+            return
+        if text[max(0, start - len(before)):start] == before and text[end:end + len(after)] == after:
+            self.replace_range(start - len(before), end + len(after), selected, (0, len(selected)))
+            return
+        self.replace_range(start, end, before + selected + after, (len(before), len(before) + len(selected)))
 
     def insert_link(self):
         start, end = self._selection()
@@ -647,9 +1600,9 @@ class WriterWindow(Gtk.ApplicationWindow):
             label = escape_link_text(selected or "link text")
             markdown = f"[{label}]({escape_link_destination(url or 'https://')})"
             if not selected:
-                self.replace_range(start, end, markdown, (1, 1 + len(label)))  # select the label
+                self.replace_range(start, end, markdown, (1, 1 + len(label)))
             elif not url:
-                self.replace_range(start, end, markdown, (len(label) + 3, len(markdown) - 1))  # the URL
+                self.replace_range(start, end, markdown, (len(label) + 3, len(markdown) - 1))
             else:
                 self.replace_range(start, end, markdown)
 
@@ -657,13 +1610,18 @@ class WriterWindow(Gtk.ApplicationWindow):
         self._read_clipboard(insert)
 
     def paste(self):
-        # pasting a URL over selected text makes it a link; anything else pastes as plain text
+        """Pasting a URL over selected text makes it a link; anything else pastes as plain text."""
+        if not self.view.has_focus():
+            focus = self.get_focus()
+            if isinstance(focus, Gtk.Text):
+                focus.emit("paste-clipboard")
+            return
         start, end = self._selection()
 
         def insert(clipboard_text):
             if not clipboard_text:
                 return
-            url = normalized_link_url(clipboard_text) if start != end else ""
+            url = normalized_link_url(clipboard_text) if start != end and is_markdown(self.current.path) else ""
             if url:
                 selected = self.text()[start:end]
                 leading = re.match(r"\s*", selected).group()
@@ -677,223 +1635,391 @@ class WriterWindow(Gtk.ApplicationWindow):
 
         self._read_clipboard(insert)
 
-    def smart_return(self, soft_break):
+    def _line_bounds(self):
+        """Offsets of the start of the first and the end of the last selected line."""
         start, end = self._selection()
-        if soft_break:
-            self.replace_range(start, end, "\n")
-            return
+        text = self.text()
+        line_start = text.rfind("\n", 0, start) + 1
+        line_end = text.find("\n", end)
+        return line_start, len(text) if line_end < 0 else line_end
+
+    def continue_list(self):
+        """Return in a list item starts the next item; Return on an empty item ends the list.
+        Everywhere else it's a plain newline (returns False and lets the text view insert it)."""
+        if not is_markdown(self.current.path) or self.buffer.get_has_selection():
+            return False
         text = self.text()
         cursor = self._cursor()
         line_start = text.rfind("\n", 0, cursor) + 1
-        line = text[line_start:cursor]
-        # inside a code fence, Return is just a newline
-        if len(re.findall(r"^\s*```", text[:cursor], re.MULTILINE)) % 2 == 1:
-            self.replace_range(start, end, "\n")
-            return
-        item = re.match(r"^(\s*)([-+*]|\d+[.)]|>+)\s+(.*)$", line)
-        if item:
-            if not item.group(3):
-                self.replace_range(line_start, cursor, "\n")  # an empty item ends the list
-            else:
-                marker = item.group(2)
-                if marker[0].isdigit():
-                    marker = f"{int(marker[:-1]) + 1}{marker[-1]}"
-                self.replace_range(start, end, f"\n{item.group(1)}{marker} ")
-            return
-        self.replace_range(start, end, "\n\n")
-
-    def _delete_paragraph_break(self):
-        cursor = self._cursor()
-        if self.buffer.get_has_selection() or cursor < 2:
+        line_end = text.find("\n", cursor)
+        line_end = len(text) if line_end < 0 else line_end
+        if len(re.findall(r"^\s*(```|~~~)", text[:cursor], re.MULTILINE)) % 2 == 1:
             return False
-        if self.buffer.get_text(self._iter(cursor - 2), self._iter(cursor), True) != "\n\n":
+        item = re.match(r"^(\s*)([-+*]|\d+[.)]|>)(\s+)(\[[ xX]\]\s+)?(.*)$", text[line_start:line_end])
+        if not item or cursor < line_start + item.start(5) and cursor != line_end:
             return False
-        self.replace_range(cursor - 2, cursor, "")
+        if not item.group(5).strip() and cursor == line_end:
+            self.replace_range(line_start, line_end, "")  # an empty item ends the list
+            return True
+        marker = item.group(2)
+        if marker[0].isdigit():
+            marker = f"{int(marker[:-1]) + 1}{marker[-1]}"
+        task = "[ ] " if item.group(4) else ""
+        self.replace_range(cursor, cursor, f"\n{item.group(1)}{marker}{item.group(3)}{task}")
         return True
 
-    def _on_window_key(self, _controller, keyval, _keycode, state):
-        ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
-        shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
-        alt = bool(state & Gdk.ModifierType.ALT_MASK)
-        super_ = bool(state & (Gdk.ModifierType.SUPER_MASK | Gdk.ModifierType.META_MASK))
-        key = Gdk.keyval_to_lower(keyval)
-        if keyval == Gdk.KEY_F11 or (super_ and not ctrl and key == Gdk.KEY_f):
-            self.unfullscreen() if self.is_fullscreen() else self.fullscreen()
-            return True
-        if not ctrl or alt or super_:
+    def indent_list_item(self, direction):
+        """Tab and Shift+Tab indent list items; elsewhere Tab inserts a tab as usual."""
+        if not is_markdown(self.current.path):
             return False
-        actions = {
-            Gdk.KEY_s: self.save_as_dialog if shift else self.save,
-            Gdk.KEY_o: self.open_dialog,
-            Gdk.KEY_n: self.new_window,
-            Gdk.KEY_p: self.print_document,
-            Gdk.KEY_z: self.buffer.redo if shift else self.buffer.undo,
-            Gdk.KEY_y: self.buffer.redo,
-            Gdk.KEY_f: lambda: self.open_search(replace=False),
-            Gdk.KEY_h: lambda: self.open_search(replace=True),
-            Gdk.KEY_b: lambda: self.wrap_selection("**", "**"),
-            Gdk.KEY_i: lambda: self.wrap_selection("*", "*"),
-            Gdk.KEY_k: self.insert_link,
-            Gdk.KEY_question: self.show_shortcuts,
-            Gdk.KEY_slash: self.show_shortcuts,
-        }
-        if key == Gdk.KEY_g and self.search_open:
-            self.move_search(1)
-            return True
-        action = actions.get(key)
-        if action is None:
-            return False
-        action()
+        start, end = self._line_bounds()
+        lines = self.text()[start:end].split("\n")
+        if not all(re.match(r"^\s*([-+*]|\d+[.)])\s", line) for line in lines if line.strip()):
+            return direction < 0  # swallow Shift+Tab outside lists, let Tab through
+        if direction > 0:
+            new = ["  " + line if line.strip() else line for line in lines]
+        else:
+            new = [re.sub(r"^ {1,2}|^\t", "", line) for line in lines]
+        joined = "\n".join(new)
+        if joined != "\n".join(lines):
+            cursor_shift = len(new[0]) - len(lines[0])
+            cursor = self._cursor()
+            self.replace_range(start, end, joined)
+            if start == end or len(lines) == 1:
+                self.buffer.place_cursor(self._iter(max(start, cursor + cursor_shift)))
         return True
 
-    def _on_editor_key(self, _controller, keyval, _keycode, state):
-        ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
-        shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
-        command = ctrl or bool(state & (Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SUPER_MASK
-                                        | Gdk.ModifierType.META_MASK))
-        paste_key = Gdk.keyval_to_lower(keyval) == Gdk.KEY_v and ctrl and not shift and not (
-            state & (Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SUPER_MASK | Gdk.ModifierType.META_MASK))
-        if paste_key or (keyval == Gdk.KEY_Insert and shift and not command):
-            self.paste()
-            return True
-        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and not command:
-            self.smart_return(shift)
-            return True
-        if keyval == Gdk.KEY_BackSpace and not command:
-            return self._delete_paragraph_break()
-        return False
+    def prefix_lines(self, prefix):
+        self.set_mode("edit" if self.mode == "preview" else self.mode)
+        start, end = self._line_bounds()
+        lines = self.text()[start:end].split("\n")
+        pattern = r"^(\s*)(?:[-+*]\s+\[[ xX]\]\s+|[-+*]\s+|\d+[.)]\s+|>\s?)"
+        stripped = [re.sub(pattern, r"\1", line) for line in lines]
+        if all(line.lstrip().startswith(prefix.strip()) for line in lines if line.strip()) and prefix != "1. ":
+            new = stripped  # toggle off
+        elif prefix == "1. ":
+            new = [re.sub(r"^(\s*)", rf"\g<1>{n + 1}. ", line) for n, line in enumerate(stripped)]
+        else:
+            new = [re.sub(r"^(\s*)", rf"\g<1>{prefix}", line) for line in stripped]
+        self.replace_range(start, end, "\n".join(new))
+        self.view.grab_focus()
 
-    # ----- document state -----
+    def set_heading(self, level):
+        self.set_mode("edit" if self.mode == "preview" else self.mode)
+        start, end = self._line_bounds()
+        line = self.text()[start:end].split("\n")[0]
+        end = start + len(line)
+        current = re.match(r"^(#{1,6})\s+", line)
+        body = line[current.end():] if current else line
+        new = body if current and len(current.group(1)) == level else "#" * level + " " + body
+        self.replace_range(start, end, new)
+        self.view.grab_focus()
 
-    def file_name(self):
-        return os.path.basename(self.file_path) if self.file_path else "Untitled.md"
+    # ----- documents -----
+
+    def document_changed(self, doc, edited=False):
+        if doc is not self.current:
+            self.sidebar.refresh_documents(self.documents, self.current)
+            return
+        if edited:
+            self.debounce("words", 150, self._update_words)
+            if self.mode != "edit":
+                self.debounce("preview", 250, self.refresh_preview)
+            if self.search_open:
+                self.debounce("search", 80, lambda: self.update_search(keep_position=True))
+            self._update_placeholder()
+        self._update_title()
+        self.debounce("sidebar", 50, lambda: self.sidebar.refresh_documents(self.documents, self.current))
+        self.save_session_soon()
 
     def _update_title(self):
-        self.set_title(("* " if self.modified else "") + self.file_name() + " - Walwrite")
-
-    def _set_modified(self, modified):
-        if self.modified != modified:
-            self.modified = modified
-            self._update_title()
-
-    def _set_status(self, status):
+        doc = self.current
+        if not doc:
+            return
+        name = doc.name() if doc.path else "Untitled"
+        self.set_title(("• " if doc.modified else "") + name + " - Walwrite")
+        if doc.status:
+            status = doc.status
+        elif doc.path:
+            status = short_path(doc.path) + ("  ·  saving…" if doc.modified else "")
+        else:
+            status = "Not saved yet" if doc.buffer.get_char_count() else ""
         self.status_label.set_text(status)
+        self.status_label.set_tooltip_text(short_path(doc.path) if doc.path else None)
+
+    def _update_words(self):
+        if self.current:
+            count = count_words(self.text())
+            self.words_label.set_text(f"{count} word" if count == 1 else f"{count} words")
+
+    def _place_placeholder(self):
+        self.placeholder.set_margin_start(self.view.get_left_margin())
+        self.placeholder.set_margin_top(self.view.get_top_margin())
 
     def _update_placeholder(self):
-        self.placeholder.set_visible(self.buffer.get_char_count() == 0 and not self.view.has_focus())
+        show = bool(self.current and self.current.buffer.get_char_count() == 0
+                    and not self.view.has_focus() and self.mode != "preview")
+        self.placeholder.set_visible(show)
         return False
 
-    def _load_text(self, text):
-        self.loading = True
-        self.buffer.begin_irreversible_action()
-        self.buffer.set_text(text)
-        self.buffer.end_irreversible_action()
-        self.buffer.place_cursor(self.buffer.get_start_iter())
-        self.last_text = text
-        self.loading = False
-        self._highlight(full=True)
-        self.words_label.set_text(self._words(text))
-        self._update_placeholder()
-
-    def _words(self, text):
-        count = count_words(text)
-        return f"{count} Word" if count == 1 else f"{count} Words"
-
-    def _on_buffer_changed(self, _buffer):
-        if self.loading:
-            return
-        text = self.text()
-        if text == self.last_text:
-            return
-        self.last_text = text
-        self._debounce("words", 120, lambda: self.words_label.set_text(self._words(self.text())))
-        self._set_modified(True)
-        self._set_status("Unsaved")
-        self._debounce("recovery", 750, self._write_recovery)
-        self._update_placeholder()
-        if self.search_open:
-            self._debounce("search", 60, lambda: self.update_search(keep_position=True))
-
-    # ----- highlighting -----
-
-    def _mark_dirty(self, first, last):
-        if self._dirty_lines:
-            first, last = min(first, self._dirty_lines[0]), max(last, self._dirty_lines[1])
-        self._dirty_lines = (first, last)
-        if not self._highlight_source:
-            # before the next redraw, so markers never flash unstyled
-            self._highlight_source = GLib.idle_add(self._highlight, priority=GLib.PRIORITY_HIGH_IDLE)
-
-    def _on_insert_text(self, _buffer, location, text, _length):
-        last = location.get_line()
-        self._mark_dirty(last - text.count("\n"), last)
-
-    def _on_delete_range(self, _buffer, start, _end):
-        line = start.get_line()
-        self._mark_dirty(line, line)
-
-    def _highlight(self, full=False):
-        if self._highlight_source:
-            GLib.source_remove(self._highlight_source) if full else None
-            self._highlight_source = 0
-        lines = None if full else self._dirty_lines
-        self._dirty_lines = None
-        if lines:
-            start = self.buffer.get_iter_at_line(max(0, lines[0]))[1]
-            end = self.buffer.get_iter_at_line(lines[1])[1]
-            end.forward_line()
+    def add_document(self, doc, show=True):
+        self.documents.append(doc)
+        if show:
+            self.show_document(doc)
         else:
-            start, end = self.buffer.get_bounds()
-        for name in SYNTAX_TAGS + ("body",):
-            self.buffer.remove_tag_by_name(name, start, end)
-        self.buffer.apply_tag(self.tags["body"], start, end)
+            self.sidebar.refresh_documents(self.documents, self.current)
+        return doc
 
-        offset = start.get_offset()
-        for line in self.buffer.get_text(start, end, True).split("\n"):
-            if line.strip():
-                self._highlight_line(line, offset)
-            offset += len(line) + 1
-        return False
+    def new_document(self, show=True):
+        return self.add_document(Document(self, self.tag_table), show)
 
-    def _tag(self, name, start, length):
-        if length > 0:
-            self.buffer.apply_tag(self.tags[name], self._iter(start), self._iter(start + length))
+    def show_document(self, doc):
+        if doc not in self.documents:
+            return
+        if self.current is not None and self.current is not doc:
+            self.current.scroll = self.scroller.get_vadjustment().get_value()
+            self.current.autosave()
+        self.current = doc
+        self.view.set_buffer(doc.buffer)
+        self.view.set_editable(True)
+        self.buffer.place_cursor(self._iter(min(doc.cursor, doc.buffer.get_char_count())))
+        GLib.idle_add(lambda: self.scroller.get_vadjustment().set_value(doc.scroll) or False)
+        if self.search_open:
+            self.update_search()
+        self._update_words()
+        self._update_placeholder()
+        self._update_title()
+        if doc.path:
+            self.sidebar.set_folder(self.sidebar.folder or os.path.dirname(doc.path))
+        self.sidebar.refresh_documents(self.documents, doc)
+        if self.mode != "edit":
+            self.refresh_preview()
+        self.view.grab_focus()
+        self.save_session_soon()
 
-    def _highlight_line(self, line, base):
-        first = len(line) - len(line.lstrip())
-        char = line[first]
-        if first == 0 and char == "#":
-            heading = re.match(r"^(#{1,6})(\s+)(.*)$", line)
-            if heading:
-                self._tag("marker", base, heading.end(2))
-                self._tag("heading", base + heading.start(3), len(heading.group(3)))
+    def find_document(self, path):
+        path = os.path.realpath(path)
+        return next((d for d in self.documents if d.path and os.path.realpath(d.path) == path), None)
+
+    def open_path(self, path):
+        """Show path, opening it in a new document unless it's already open. Returns the document."""
+        existing = self.app.find_open(path)
+        if existing:
+            window, doc = existing
+            window.show_document(doc)
+            window.present()
+            return doc
+        if not os.path.exists(path):
+            self.current and self.current.set_status(f"{short_path(path)} doesn't exist")
+            return None
+        # replace an untouched empty document instead of piling up untitled ones
+        blank = self.current if self.current and self.current.is_empty_untitled() else None
+        doc = Document(self, self.tag_table)
+        if not doc.load(path):
+            if self.current:
+                self.current.set_status(doc.status)
+            return None
+        if blank:
+            index = self.documents.index(blank)
+            self.documents[index] = doc
+            blank.dispose()
+            blank.clear_draft()
+            self.show_document(doc)
+        else:
+            self.add_document(doc)
+        doc.set_status(f"Opened {doc.name()}")
+        self.app.remember_recent(doc.path)
+        return doc
+
+    def close_document(self, doc=None, then=None):
+        doc = doc or self.current
+        if doc is None:
+            return
+
+        def really_close():
+            doc.dispose()
+            doc.clear_draft()
+            index = self.documents.index(doc)
+            self.documents.remove(doc)
+            if not self.documents:
+                self.new_document(show=False)
+            if doc is self.current:
+                self.current = None
+                self.show_document(self.documents[min(index, len(self.documents) - 1)])
+            else:
+                self.sidebar.refresh_documents(self.documents, self.current)
+            self.save_session_soon()
+            if then:
+                then()
+
+        if doc.path and doc.modified:
+            doc.autosave()
+        if not doc.modified or (doc.path and not doc.modified):
+            really_close()
+            return
+        if not doc.path and not doc.text().strip():
+            really_close()
+            return
+        self.show_document(doc)
+
+        def respond(response):
+            if response == "save":
+                self.save(doc, then=really_close)
+            elif response == "discard":
+                really_close()
+
+        choice_dialog(self, "Unsaved document", f"Save {doc.name()} before closing it?",
+                      [("Cancel", "cancel", False, True), ("Don't Save", "discard", False, True),
+                       ("Save", "save", True, True)], respond, focus="save")
+
+    def cycle_document(self, step):
+        if len(self.documents) > 1 and self.current in self.documents:
+            index = (self.documents.index(self.current) + step) % len(self.documents)
+            self.show_document(self.documents[index])
+
+    def _on_focus_change(self):
+        # save when leaving the window, like most editors with autosave
+        if not self.is_active() and self.current:
+            for doc in self.documents:
+                doc.autosave()
+        self._update_placeholder()
+
+    # ----- files -----
+
+    def _file_dialog(self, title):
+        dialog = Gtk.FileDialog(title=title, modal=True)
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        text = Gtk.FileFilter(name="Markdown and text files")
+        for pattern in TEXT_FILES:
+            text.add_suffix(pattern.lstrip("."))
+        everything = Gtk.FileFilter(name="All files")
+        everything.add_pattern("*")
+        filters.append(text)
+        filters.append(everything)
+        dialog.set_filters(filters)
+        dialog.set_default_filter(text)
+        folder = (os.path.dirname(self.current.path) if self.current and self.current.path
+                  else self.sidebar.folder or read_settings().get("last_save_dir") or os.path.expanduser("~"))
+        if os.path.isdir(folder):
+            dialog.set_initial_folder(Gio.File.new_for_path(folder))
+        return dialog
+
+    def open_dialog(self):
+        dialog = self._file_dialog("Open")
+
+        def finish(dialog, result):
+            try:
+                files = dialog.open_multiple_finish(result)
+            except GLib.Error:
                 return
-        if char == ">":
-            quote = re.match(r"^(\s*>+\s?)(.*)$", line)
-            if quote:
-                self._tag("marker", base, len(quote.group(1)))
-                self._tag("quote", base + quote.start(2), len(quote.group(2)))
-        if char in "-+*" or char.isdigit():
-            item = re.match(r"^(\s*(?:[-+*]|\d+[.)])\s+)(.*)$", line)
-            if item:
-                self._tag("marker", base, len(item.group(1)))
-        if char in "-*_" and re.match(r"^\s{0,3}([-*_])(?:\s*\1){2,}\s*$", line):
-            self._tag("marker", base, len(line))
-        if "`" in line:
-            for code in re.finditer(r"`([^`]+)`", line):
-                self._tag("code", base + code.start(), len(code.group()))
-        for kind, (start, length), markers in inline_markup(line):
-            self._tag(kind, base + start, length)
-            for marker_start, marker_length in markers:
-                self._tag("hidden", base + marker_start, marker_length)
+            for index in range(files.get_n_items()):
+                path = files.get_item(index).get_path()
+                if path:
+                    self.open_path(path)
+
+        dialog.open_multiple(self, None, finish)
+
+    def open_folder_dialog(self):
+        dialog = Gtk.FileDialog(title="Open Folder", modal=True)
+        if self.sidebar.folder:
+            dialog.set_initial_folder(Gio.File.new_for_path(self.sidebar.folder))
+
+        def finish(dialog, result):
+            try:
+                folder = dialog.select_folder_finish(result)
+            except GLib.Error:
+                return
+            if folder and folder.get_path():
+                self.sidebar.set_folder(folder.get_path())
+                self.sidebar_revealer.set_reveal_child(True)
+                update_settings(folder=folder.get_path())
+                self.save_session_soon()
+
+        dialog.select_folder(self, None, finish)
+
+    def save(self, doc=None, then=None):
+        doc = doc or self.current
+        if doc.path:
+            if doc.save_to(doc.path) and then:
+                then()
+        else:
+            self.save_as(doc, then)
+
+    def save_as(self, doc=None, then=None, title="Save As"):
+        doc = doc or self.current
+        dialog = self._file_dialog(title)
+        dialog.set_initial_name(os.path.basename(doc.path) if doc.path else suggested_file_name(doc.text()))
+
+        def finish(dialog, result):
+            try:
+                file = dialog.save_finish(result)
+            except GLib.Error:
+                return
+            if file and file.get_path():
+                old = doc.path
+                if doc.save_to(file.get_path()):
+                    update_settings(last_save_dir=os.path.dirname(doc.path))
+                    self.app.remember_recent(doc.path)
+                    if title == "Rename" and old and os.path.realpath(old) != os.path.realpath(doc.path):
+                        try:
+                            os.remove(old)
+                        except OSError:
+                            pass
+                    if then:
+                        then()
+
+        dialog.save(self, None, finish)
+
+    def rename(self):
+        if not self.current.path:
+            self.save_as()
+        else:
+            self.save_as(title="Rename")
+
+    # ----- preview -----
+
+    def set_mode(self, mode):
+        if mode == self.mode:
+            return
+        self.mode = mode
+        self.scroller.set_visible(mode != "preview")
+        self.preview.set_visible(mode != "edit")
+        if mode == "split":
+            GLib.idle_add(lambda: self.panes.set_position(self.panes.get_width() // 2) or False)
+        if mode != "edit":
+            self.refresh_preview()
+        if mode != "preview":
+            self.view.grab_focus()
+        self._sync_toggles()
+        self._update_placeholder()
+        self.save_session_soon()
+
+    def refresh_preview(self):
+        if self.current and self.mode != "edit":
+            self.preview.render(self.current, self.palette, self.font_size)
+
+    def toggle_sidebar(self):
+        self.sidebar_revealer.set_reveal_child(not self.sidebar_revealer.get_reveal_child())
+        update_settings(sidebar=self.sidebar_revealer.get_reveal_child())
+        self.save_session_soon()
+
+    def _sync_toggles(self):
+        for button, on in ((self.sidebar_button, self.sidebar_revealer.get_reveal_child()),
+                           (self.preview_button, self.mode != "edit")):
+            (button.add_css_class if on else button.remove_css_class)("on")
 
     # ----- search -----
 
     def open_search(self, replace):
+        self.set_mode("edit" if self.mode == "preview" else self.mode)
         self.search_open = True
         self.search_pane.set_visible(True)
         for widget in (self.replace_entry, self.replace_button, self.replace_all_button):
             widget.set_visible(replace)
+        start, end = self._selection()
+        selected = self.text()[start:end]
+        if selected and "\n" not in selected:
+            self.find_entry.set_text(selected)
         self.find_entry.grab_focus()
         self.find_entry.select_region(0, -1)
         self.update_search()
@@ -902,8 +2028,7 @@ class WriterWindow(Gtk.ApplicationWindow):
         self.search_open = False
         self.search_pane.set_visible(False)
         self.search_matches, self.search_index = [], -1
-        self._show_search_tags()
-        self.buffer.place_cursor(self.buffer.get_iter_at_mark(self.buffer.get_insert()))
+        self._show_search_tags(select=False)
         self.view.grab_focus()
 
     def update_search(self, keep_position=False):
@@ -912,17 +2037,24 @@ class WriterWindow(Gtk.ApplicationWindow):
         self.search_matches = [m.start() for m in re.finditer(re.escape(query), text, re.IGNORECASE)] if query else []
         if keep_position and self.search_matches:
             self.search_index = min(max(self.search_index, 0), len(self.search_matches) - 1)
+        elif self.search_matches:
+            cursor = self._selection()[0]
+            self.search_index = next((i for i, m in enumerate(self.search_matches) if m >= cursor), 0)
         else:
-            self.search_index = 0 if self.search_matches else -1
+            self.search_index = -1
         self._show_search_tags(select=not keep_position)
 
     def _show_search_tags(self, select=True):
-        start, end = self.buffer.get_bounds()
-        self.buffer.remove_tag_by_name("search", start, end)
-        self.buffer.remove_tag_by_name("current-search", start, end)
+        for doc in self.documents:
+            start, end = doc.buffer.get_bounds()
+            doc.buffer.remove_tag_by_name("search", start, end)
+            doc.buffer.remove_tag_by_name("current-search", start, end)
+        if not self.search_open:
+            return
         length = len(self.find_entry.get_text())
         for index, match in enumerate(self.search_matches):
-            self._tag("current-search" if index == self.search_index else "search", match, length)
+            name = "current-search" if index == self.search_index else "search"
+            self.buffer.apply_tag_by_name(name, self._iter(match), self._iter(match + length))
         total = len(self.search_matches)
         self.count_label.set_text(f"{self.search_index + 1}/{total}" if total else "0/0")
         if select and self.search_index >= 0:
@@ -940,19 +2072,21 @@ class WriterWindow(Gtk.ApplicationWindow):
             return
         start = self.search_matches[self.search_index]
         self.replace_range(start, start + len(self.find_entry.get_text()), self.replace_entry.get_text())
-        self._cancel("search")
-        self.update_search()
+        self.update_search(keep_position=True)
+        self._show_search_tags()
 
     def replace_all(self):
         length = len(self.find_entry.get_text())
-        if not length:
+        if not length or not self.search_matches:
             return
+        count = len(self.search_matches)
         self.buffer.begin_user_action()
         for start in reversed(self.search_matches):
-            self.replace_range(start, start + length, self.replace_entry.get_text())
+            self.buffer.delete(self._iter(start), self._iter(start + length))
+            self.buffer.insert(self._iter(start), self.replace_entry.get_text())
         self.buffer.end_user_action()
-        self._cancel("search")
         self.update_search()
+        self.current.set_status(f"Replaced {count} match{'es' if count != 1 else ''}")
 
     def _on_find_key(self, _controller, keyval, _keycode, state):
         if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
@@ -972,121 +2106,8 @@ class WriterWindow(Gtk.ApplicationWindow):
             return True
         return False
 
-    # ----- files -----
 
-    def _file_dialog(self, title):
-        dialog = Gtk.FileDialog(title=title, modal=True)
-        filters = Gio.ListStore.new(Gtk.FileFilter)
-        markdown = Gtk.FileFilter(name="Markdown files")
-        markdown.add_pattern("*.md")
-        markdown.add_pattern("*.markdown")
-        everything = Gtk.FileFilter(name="All files")
-        everything.add_pattern("*")
-        filters.append(markdown)
-        filters.append(everything)
-        dialog.set_filters(filters)
-        dialog.set_default_filter(markdown)
-        return dialog
-
-    def open_dialog(self):
-        dialog = self._file_dialog("Open File")
-
-        def finish(dialog, result):
-            try:
-                file = dialog.open_finish(result)
-            except GLib.Error:
-                return
-            if file and file.get_path():
-                self.request_open(file.get_path())
-
-        dialog.open(self, None, finish)
-
-    def request_open(self, path):
-        if not self.modified:
-            self.open_path(path)
-            return
-        self.pending_open_path = path
-        self.pending_action = "open"
-        self._ask_unsaved()
-
-    def open_path(self, path):
-        name = os.path.basename(path)
-        try:
-            with open(path, "rb") as f:
-                contents = f.read()
-        except OSError:
-            self._set_status(f"Could not open {name}.")
-            return
-        self._load_text(contents.decode("utf-8", errors="replace"))
-        self.recovery.clear()
-        self.known_contents = contents
-        self.file_path = os.path.abspath(path)
-        self._watch_file()
-        self._set_modified(False)
-        self._update_title()
-        self._set_status(f"Opened {self.file_name()}")
-        if self.search_open:
-            self.update_search()
-
-    def save(self):
-        if self.file_path:
-            self.save_to(self.file_path)
-        else:
-            self.save_as_dialog()
-
-    def save_as_dialog(self):
-        dialog = self._file_dialog("Save File")
-        if self.file_path:
-            folder, name = os.path.dirname(self.file_path), os.path.basename(self.file_path)
-        else:
-            folder = read_settings().get("last_save_dir") or ""
-            if not os.path.isdir(folder):
-                folder = os.path.expanduser("~")
-            name = suggested_file_name(self.text())
-        dialog.set_initial_folder(Gio.File.new_for_path(folder))
-        dialog.set_initial_name(name)
-
-        def finish(dialog, result):
-            try:
-                file = dialog.save_finish(result)
-            except GLib.Error:
-                file = None
-            if file and file.get_path():
-                self.save_to(file.get_path())
-            else:
-                self.pending_action = ""
-
-        dialog.save(self, None, finish)
-
-    def save_to(self, path):
-        name = os.path.basename(path)
-        contents = self.text().encode()
-        # stop watching first so our own write isn't reported as an outside change
-        self._unwatch_file()
-        try:
-            atomic_write(path, contents)
-        except OSError:
-            self._watch_file()
-            self.pending_action = ""
-            self._set_status(f"Could not save {name}.")
-            return
-        self.known_contents = contents
-        self.file_path = os.path.abspath(path)
-        self._watch_file()
-        update_settings(last_save_dir=os.path.dirname(self.file_path))
-        self._set_modified(False)
-        self._update_title()
-        self._set_status(f"Saved {self.file_name()}")
-        self._cancel("recovery")
-        self.recovery.clear()
-        if self.pending_action:
-            self._complete_pending_action()
-
-    def new_window(self):
-        try:
-            subprocess.Popen([sys.executable, os.path.realpath(__file__)], start_new_session=True)
-        except OSError:
-            self._set_status("Could not open a new window.")
+    # ----- printing and dialogs -----
 
     def print_document(self):
         try:
@@ -1094,11 +2115,11 @@ class WriterWindow(Gtk.ApplicationWindow):
             gi.require_version("PangoCairo", "1.0")
             from gi.repository import PangoCairo
         except (ImportError, ValueError):
-            self._set_status("Printing needs python3-cairo.")
+            self.current.set_status("Printing needs python3-cairo")
             return
-        markup = markdown_to_pango(self.text())
+        markup = markdown_to_pango(self.text()) if is_markdown(self.current.path) else escape_markup(self.text())
         state = {}
-        operation = Gtk.PrintOperation(job_name=self.file_name())
+        operation = Gtk.PrintOperation(job_name=self.current.name())
 
         def begin(operation, context):
             layout = context.create_pango_layout()
@@ -1132,109 +2153,7 @@ class WriterWindow(Gtk.ApplicationWindow):
         try:
             operation.run(Gtk.PrintOperationAction.PRINT_DIALOG, self)
         except GLib.Error as error:
-            self._set_status(f"Could not print: {error.message}")
-
-    # ----- outside changes -----
-
-    def _unwatch_file(self):
-        self._cancel("external")
-        if self.monitor:
-            self.monitor.cancel()
-            self.monitor = None
-
-    def _watch_file(self):
-        self._unwatch_file()
-        if self.file_path and os.path.exists(self.file_path):
-            self.monitor = Gio.File.new_for_path(self.file_path).monitor_file(Gio.FileMonitorFlags.WATCH_MOVES, None)
-            self.monitor.connect("changed", lambda *_: self._debounce("external", 200, self._check_external_change))
-
-    def _check_external_change(self):
-        if not self.file_path or self.external_dialog:
-            return
-        deleted = not os.path.exists(self.file_path)
-        if not deleted and self.known_contents is not None:
-            try:
-                with open(self.file_path, "rb") as f:
-                    if f.read() == self.known_contents:
-                        return  # an atomic save replaced the file with what we already have
-            except OSError:
-                pass
-        if deleted:
-            body = "This file was removed outside Walwrite. Keep your text as an unsaved document?"
-        elif self.modified:
-            body = "This file changed outside Walwrite. Reloading will discard your changes."
-        else:
-            body = "This file changed outside Walwrite."
-
-        def respond(response):
-            self.external_dialog = None
-            if response == "keep":
-                self._keep_external_version()
-            elif response == "reload":
-                self.open_path(self.file_path)
-
-        self.external_dialog = choice_dialog(
-            self, "File removed" if deleted else "File changed", body,
-            [("Keep Mine", "keep", deleted, True), ("Reload", "reload", True, not deleted)],
-            respond, focus="keep" if deleted else "reload")
-
-    def _keep_external_version(self):
-        try:
-            with open(self.file_path, "rb") as f:
-                self.known_contents = f.read()
-        except OSError:
-            self.known_contents = None
-        self._set_modified(True)
-        self._debounce("recovery", 750, self._write_recovery)
-        self._watch_file()
-        self._set_status("Kept your version")
-
-    # ----- unsaved changes and recovery -----
-
-    def _ask_unsaved(self):
-        def respond(response):
-            if response == "save":
-                self.save()
-            elif response == "discard":
-                self._cancel("recovery")
-                self.recovery.clear()
-                self._complete_pending_action()
-            else:
-                self.pending_action = ""
-
-        choice_dialog(self, "Unsaved changes", f"Save changes to {self.file_name()} before closing?",
-                      [("Cancel", "cancel", False, True), ("Discard", "discard", False, True),
-                       ("Save", "save", True, True)], respond, focus="save")
-
-    def _complete_pending_action(self):
-        action, self.pending_action = self.pending_action, ""
-        if action == "close":
-            self.close_confirmed = True
-            self.close()
-        elif action == "open":
-            self.open_path(self.pending_open_path)
-
-    def _write_recovery(self):
-        if self.modified:
-            self.recovery.write(self.file_path, self.text())
-
-    def _restore_recovery(self):
-        draft = self.recovery.read()
-        if not draft:
-            return False
-        self._load_text(draft["text"])
-        path = draft.get("file") or None
-        try:
-            with open(path, "rb") as f:
-                self.known_contents = f.read()
-        except (OSError, TypeError):
-            self.known_contents = None
-        self.file_path = path
-        self._watch_file()
-        self._set_modified(True)
-        self._update_title()
-        self._set_status("Recovered unsaved changes")
-        return True
+            self.current.set_status(f"Could not print: {error.message}")
 
     def show_shortcuts(self):
         width = max(len(keys) for keys, _ in SHORTCUTS) + 3
@@ -1242,30 +2161,247 @@ class WriterWindow(Gtk.ApplicationWindow):
         choice_dialog(self, "Keyboard shortcuts", body, [("Close", "close", True, True)],
                       lambda _r: None, focus="close")
 
+    def show_about(self):
+        preview = "WebKitGTK" if WebKit else "plain GTK (install webkitgtk6.0 for full rendering)"
+        renderer = "python-markdown" if python_markdown else "built-in"
+        choice_dialog(self, "Walwrite", "A simple Markdown and text editor in the pywal colors.\n\n"
+                      f"Preview: {preview}\nMarkdown: {renderer}\nDrafts and session: {short_path(STATE_DIR)}",
+                      [("Close", "close", True, True)], lambda _r: None, focus="close")
+
+    # ----- session and closing -----
+
+    def state(self):
+        docs = []
+        for doc in self.documents:
+            if doc.is_empty_untitled() and len(self.documents) > 1:
+                continue
+            if doc.modified:
+                doc.write_draft()
+            scroll = self.scroller.get_vadjustment().get_value() if doc is self.current else doc.scroll
+            docs.append({"path": doc.path, "draft": doc.draft_id if doc.modified or not doc.path else None,
+                         "cursor": doc.cursor, "scroll": scroll})
+        current = self.documents.index(self.current) if self.current in self.documents else 0
+        return {"documents": docs, "current": current, "mode": self.mode,
+                "sidebar": self.sidebar_revealer.get_reveal_child(), "folder": self.sidebar.folder,
+                "width": self.get_width() or None, "height": self.get_height() or None,
+                "maximized": self.is_maximized(), "font_size": self.font_size}
+
+    def restore(self, state):
+        for entry in state.get("documents", []):
+            path, draft = entry.get("path"), entry.get("draft")
+            doc = Document(self, self.tag_table, path=path, draft_id=draft)
+            if draft and doc.restore_draft():
+                pass
+            elif path and os.path.exists(path):
+                if not doc.load(path):
+                    continue
+            else:
+                continue
+            doc.cursor = entry.get("cursor", 0)
+            doc.scroll = entry.get("scroll", 0.0)
+            doc.status = ""
+            self.documents.append(doc)
+        if not self.documents:
+            self.new_document(show=False)
+        index = min(max(state.get("current", 0), 0), len(self.documents) - 1)
+        self.show_document(self.documents[index])
+        if state.get("mode") in ("preview", "split"):
+            self.set_mode(state["mode"])
+
+    def save_session_soon(self):
+        if not self.closing:
+            self.app.save_session_soon()
+
     def _on_close_request(self, _window):
-        if self.modified and not self.close_confirmed:
-            self.pending_action = "close"
-            self._ask_unsaved()
-            return True
-        if self.is_maximized():
-            update_settings(maximized=True)
-        elif not self.is_fullscreen():
-            update_settings(width=self.get_width(), height=self.get_height(), maximized=False)
-        if not self.modified:
-            self.recovery.clear()
+        # everything is kept: saved files are autosaved and untitled text stays a draft,
+        # so closing never asks; the documents come back next time
+        for doc in self.documents:
+            doc.autosave()
+        if not self.is_maximized() and not self.is_fullscreen():
+            update_settings(width=self.get_width(), height=self.get_height())
+        self.app.window_closing(self)
+        self.closing = True
+        for doc in self.documents:
+            doc.dispose()
         return False
 
 
+# ---------- app ----------
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_OPEN)
+        self.windows = []
+        self.closed_states = []  # windows closed earlier this run, in case the last one closes after them
+        self._session_source = 0
+        self._lock = None
+
+    def do_startup(self):
+        Gtk.Application.do_startup(self)
+        GLib.set_application_name("Walwrite")
+        for name, callback in (("new-window", self.new_window), ("quit", self.quit_all)):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", lambda _a, _p, c=callback: c())
+            self.add_action(action)
+        for action, accels in ACCELS.items():
+            if action not in ("win.cut", "win.copy", "win.select-all", "win.paste"):
+                self.set_accels_for_action(action, accels)
+        os.makedirs(DRAFTS_DIR, exist_ok=True)
+        self._migrate_old_recovery()
+
+    def do_activate(self):
+        if self.windows:
+            self.windows[-1].present()
+            return
+        self.restore_session()
+
+    def do_open(self, files, _n_files, _hint):
+        if not self.windows:
+            self.restore_session()
+        window = self.get_active_window() or self.windows[-1]
+        for file in files:
+            path = file.get_path()
+            if path:
+                if not os.path.exists(path):
+                    try:  # `walwrite notes.md` for a new file creates it, like other editors
+                        open(path, "a").close()
+                    except OSError:
+                        continue
+                window.open_path(path)
+        window.present()
+
+    def restore_session(self):
+        session = read_json(SESSION_FILE, {})
+        states = [s for s in session.get("windows", []) if isinstance(s, dict)] or [{}]
+        for state in states:
+            window = WriterWindow(self, state)
+            self.windows.append(window)
+            window.restore(state)
+            window.present()
+
+    def new_window(self):
+        window = WriterWindow(self, {"sidebar": False})
+        self.windows.append(window)
+        window.new_document()
+        window.present()
+        self.save_session_soon()
+
+    def find_open(self, path):
+        for window in self.windows:
+            doc = window.find_document(path)
+            if doc:
+                return window, doc
+        return None
+
+    def remember_recent(self, path):
+        recent = [p for p in read_settings().get("recent", []) if p != path]
+        update_settings(recent=[path] + recent[:19])
+
+    def save_session_soon(self):
+        if self._session_source:
+            GLib.source_remove(self._session_source)
+        self._session_source = GLib.timeout_add(400, self._save_session)
+
+    def _save_session(self):
+        self._session_source = 0
+        states = [w.state() for w in self.windows if not w.closing]
+        if states:
+            write_json(SESSION_FILE, {"windows": states, "saved": time.time()})
+            self._clean_drafts(states)
+        return False
+
+    def window_closing(self, window):
+        state = window.state()
+        others = [w for w in self.windows if w is not window and not w.closing]
+        if others:
+            # closing one of several windows: its files close with it, and untitled text moves
+            # to a remaining window so it isn't lost
+            moved =[d for d in window.documents if not d.path and d.modified and d.text().strip()]
+            if moved:
+                target = others[-1]
+                for doc in moved:
+                    copy = Document(target, target.tag_table, draft_id=doc.draft_id)
+                    copy.set_text(doc.text(), modified=True)
+                    copy.write_draft()
+                    target.add_document(copy, show=False)
+            self.windows.remove(window)
+            self.save_session_soon()
+        else:
+            if self._session_source:
+                GLib.source_remove(self._session_source)
+                self._session_source = 0
+            write_json(SESSION_FILE, {"windows": [state], "saved": time.time()})
+            self._clean_drafts([state])
+            self.windows.remove(window)
+
+    def quit_all(self):
+        if self.windows:
+            states = [w.state() for w in self.windows]
+            write_json(SESSION_FILE, {"windows": states, "saved": time.time()})
+            self._clean_drafts(states)
+            for window in list(self.windows):
+                for doc in window.documents:
+                    doc.autosave()
+                    doc.dispose()
+                window.closing = True
+            self.windows.clear()
+        self.quit()
+
+    @staticmethod
+    def _clean_drafts(states):
+        keep = {d.get("draft") for s in states for d in s.get("documents", []) if d.get("draft")}
+        try:
+            names = os.listdir(DRAFTS_DIR)
+        except OSError:
+            return
+        for name in names:
+            if name.endswith(".json") and name[:-5] not in keep:
+                path = os.path.join(DRAFTS_DIR, name)
+                # a draft another running walwrite might still own is left alone for a day
+                if time.time() - os.path.getmtime(path) > 86400 or not keep:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+
+    @staticmethod
+    def _migrate_old_recovery():
+        """Walwrite used to keep one recovery-N.json per window; turn those into session drafts."""
+        try:
+            names = [n for n in os.listdir(STATE_DIR) if re.match(r"recovery-\d+\.(json|lock)$", n)]
+        except OSError:
+            return
+        if not names:
+            return
+        session = read_json(SESSION_FILE, {})
+        windows = session.get("windows") or [{"documents": []}]
+        for name in names:
+            path = os.path.join(STATE_DIR, name)
+            if name.endswith(".json"):
+                data = read_json(path, {})
+                if isinstance(data.get("text"), str) and data["text"].strip():
+                    draft_id = uuid.uuid4().hex
+                    write_json(os.path.join(DRAFTS_DIR, draft_id + ".json"), data)
+                    windows[0].setdefault("documents", []).append(
+                        {"path": data.get("file") or None, "draft": draft_id, "cursor": 0, "scroll": 0})
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        session["windows"] = windows
+        write_json(SESSION_FILE, session)
+
+
 def main():
-    GLib.set_prgname(APP_NAME)  # becomes the Wayland app_id that sway's floating rule matches
+    GLib.set_prgname(APP_NAME)  # the Wayland app_id that sway's floating rule matches
     Gtk.Window.set_default_icon_name("accessories-text-editor")
-    args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
-    path = args[0] if args else None
-    if path and path.startswith("file://"):
-        path = Gio.File.new_for_uri(path).get_path()
-    app = Gtk.Application(flags=Gio.ApplicationFlags.NON_UNIQUE)
-    app.connect("activate", lambda app: WriterWindow(app, path).present())
-    return app.run([sys.argv[0]])
+    args = []
+    for arg in sys.argv[1:]:
+        if arg.startswith("file://"):
+            arg = Gio.File.new_for_uri(arg).get_path() or arg
+        if not arg.startswith("-"):
+            args.append(os.path.abspath(arg))
+    return App().run([sys.argv[0]] + args)
 
 
 if __name__ == "__main__":

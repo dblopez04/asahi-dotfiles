@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=System Settings
+GenericName=Settings
+Comment=Wi-Fi, Bluetooth, sound, displays, appearance, and more
+Exec=settings-panel.py
+Icon=preferences-system
+Terminal=false
+Categories=Settings;
+Keywords=settings;preferences;control;wifi;bluetooth;sound;display;battery;

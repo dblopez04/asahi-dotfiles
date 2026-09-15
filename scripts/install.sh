@@ -46,8 +46,8 @@ PACKAGES=(
     google-noto-fonts-common google-noto-emoji-fonts
     # theming: pywal and the oomox GTK theme builder
     ImageMagick pipx sassc librsvg2-tools gdk-pixbuf2-devel glib2-devel bc glib2 elementary-icon-theme
-    # walcalc and walwrite
-    python3-gobject gtk4
+    # walcalc, walwrite (webkitgtk and markdown render its preview), the settings panel and wallpaper picker
+    python3-gobject gtk4 webkitgtk6.0 python3-markdown fwupd
     # this script
     stow git curl tar xz
 )
@@ -89,6 +89,9 @@ gpgkey=https://packages.microsoft.com/keys/microsoft.asc'
     if ! command -v tailscale >/dev/null; then
         curl -fsSL https://tailscale.com/install.sh | sh
     fi
+    sudo systemctl enable --now tailscaled
+    # lets the settings panel change tailscale settings without sudo
+    sudo tailscale set --operator="$USER" || true
 fi
 
 step "Installing BlexMono Nerd Font"
@@ -110,6 +113,8 @@ done
 
 step "Installing pywal, pywalfox, and autotiling"
 pipx list --short 2>/dev/null | grep -q '^pywal16 ' || pipx install pywal16
+# palette backends wal.sh can use (picked in the settings panel's appearance page)
+pipx runpip pywal16 show colorz >/dev/null 2>&1 || pipx inject pywal16 colorz haishoku colorthief modern_colorthief
 pipx list --short 2>/dev/null | grep -q '^pywalfox ' || pipx install pywalfox
 pipx list --short 2>/dev/null | grep -q '^autotiling ' || pipx install autotiling
 pywalfox install >/dev/null
@@ -150,13 +155,16 @@ ln -sfn "$HOME/.opencode/bin/opencode" "$HOME/.local/bin/opencode"
 
 step "Linking dotfiles"
 # create parents so stow links individual entries inside them instead of the whole directory
-mkdir -p "$HOME/.config" "$HOME/.local/share" "$HOME/.local/share/applications"
+mkdir -p "$HOME/.config" "$HOME/.local/share" "$HOME/.local/share/applications" "$HOME/.config/systemd/user"
+# the settings panel's unsaved sway changes (git-ignored); sway's config includes it
+settings_conf="$DOTFILES/.config/sway/settings.conf"
+[ -e "$settings_conf" ] || printf '# Unsaved changes from the settings panel.\n' > "$settings_conf"
 (cd "$DOTFILES" && stow --restow .)
 
 step "Linking scripts into ~/.local/bin"
 for script in "$DOTFILES"/scripts/*; do
     name=$(basename "$script")
-    [ "$name" = install.sh ] && continue
+    case $name in install.sh|__pycache__) continue ;; esac
     ln -sfn "$script" "$HOME/.local/bin/$name"
 done
 
@@ -178,10 +186,27 @@ else
     cp "$HOME/.cache/wal/gtk.css" "$HOME/.config/gtk-4.0/gtk-dark.css"
 fi
 
+step "Theming btop and starting the usage history service"
+mkdir -p "$HOME/.config/btop/themes"
+ln -sfn "$HOME/.cache/wal/btopwal.theme" "$HOME/.config/btop/themes/wal.theme"
+if [ ! -f "$HOME/.config/btop/btop.conf" ]; then
+    printf 'color_theme = "%s"\ntheme_background = False\n' "$HOME/.config/btop/themes/wal.theme" > "$HOME/.config/btop/btop.conf"
+fi
+# battery and app usage history for the settings panel (one tiny sample a minute)
+if systemctl --user show-environment >/dev/null 2>&1; then
+    systemctl --user daemon-reload
+    systemctl --user enable --now usage-sampler.service
+fi
+
 step "Setting zsh as the login shell"
 zsh_path=$(command -v zsh)
 if [ "$(basename "$(getent passwd "$USER" | cut -d: -f7)")" != zsh ]; then
-    chsh -s "$zsh_path"
+    if $USE_SUDO; then
+        grep -qx "$zsh_path" /etc/shells || echo "$zsh_path" | sudo tee -a /etc/shells >/dev/null
+        chsh -s "$zsh_path" || sudo usermod --shell "$zsh_path" "$USER"
+    else
+        chsh -s "$zsh_path"
+    fi
 fi
 
 if $USE_SUDO; then
@@ -198,11 +223,13 @@ if $USE_SUDO; then
         || (cd / && sudo -u postgres createdb --owner "$USER" "$USER")
 
     step "Setting up the tuigreet login screen"
+    # sway-session sets the environment apps need (Qt theming, Electron on Wayland) before sway starts
+    sudo install -m 755 "$DOTFILES/scripts/sway-session" /usr/local/bin/sway-session
     greetd_conf='[terminal]
 vt = next
 
 [default_session]
-command = "tuigreet --time --remember --cmd sway"
+command = "tuigreet --time --remember --cmd sway-session"
 user = "greetd"'
     if [ "$(cat /etc/greetd/config.toml 2>/dev/null)" != "$greetd_conf" ]; then
         printf '%s\n' "$greetd_conf" | sudo tee /etc/greetd/config.toml >/dev/null
@@ -233,5 +260,6 @@ Next:
   - sign in: run `claude`, `codex`, and `opencode` once each
   - connect to your tailnet: sudo tailscale up
   - add the Pywalfox extension in Firefox, then run: pywalfox update
-  - change the theme any time with: wal.sh /path/to/image
+  - change the wallpaper and theme with Super+P, everything else with Super+,
+    (settings changes stay unsaved until you save them there; old configs go to ~/dotfiles/backups)
 EOF

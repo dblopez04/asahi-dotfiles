@@ -76,7 +76,9 @@
 		"modules": ["custom/expand-icon", "tray"]
 	}},
 	"custom/expand-icon": {{
-		"format": "",
+		"exec": "~/.local/bin/tray-status.py",
+		"return-type": "json",
+		"restart-interval": 5,
 		"tooltip": false
 	}},
 	"tray": {{
