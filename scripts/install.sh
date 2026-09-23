@@ -34,6 +34,8 @@ PACKAGES=(
     xdg-desktop-portal-wlr mate-polkit greetd tuigreet
     # used by keybindings and scripts
     grim slurp grimshot wl-clipboard wtype jq brightnessctl playerctl pavucontrol pulseaudio-utils libnotify
+    # screenshot markup
+    swappy
     # apps
     kitty nautilus firefox code neovim vim-enhanced feh mpv libreoffice flatpak
     # shell and terminal tools

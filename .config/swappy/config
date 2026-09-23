@@ -1,0 +1,10 @@
+[Default]
+save_dir=$HOME/Screenshots
+save_filename_format=%Y-%m-%d_%H-%M-%S-marked.png
+show_panel=true
+line_size=4
+text_size=18
+text_font=BlexMono Nerd Font
+paint_mode=arrow
+early_exit=true
+fill_shape=false

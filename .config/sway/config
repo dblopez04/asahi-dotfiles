@@ -19,7 +19,8 @@ set $terminal kitty
 set $fileManager nautilus
 # sway gives apps a PATH without ~/.local/bin, so add it for everything the launcher starts
 set $menu env PATH="$HOME/.local/bin:$PATH" fuzzel
-set $screenshot XDG_SCREENSHOTS_DIR=$HOME/Screenshots grimshot --notify savecopy
+# saved to ~/Screenshots and copied; click the notification to mark it up
+set $screenshot ~/.local/bin/screenshot.sh
 set $lock swaylock -f
 
 ###############
@@ -127,7 +128,7 @@ bindsym $mod+Shift+w exec ~/.local/bin/walwrite
 bindsym $mod+g fullscreen
 bindsym $mod+Shift+c reload
 
-bindsym $mod+k exec $screenshot active
+bindsym $mod+k exec $screenshot window
 bindsym $mod+l exec $screenshot output
 bindsym $mod+Shift+k exec $screenshot area
 
