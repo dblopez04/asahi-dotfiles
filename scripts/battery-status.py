@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Waybar battery with an explicit right-click percentage toggle."""
+"""Waybar battery. The percentage shows next to the icon unless it's turned off with a right click."""
 import fcntl
 import json
 import os
@@ -9,7 +9,8 @@ import subprocess
 import sys
 
 ROOT = Path('/sys/class/power_supply')
-STATE = Path(os.environ.get('XDG_RUNTIME_DIR', Path.home() / '.cache')) / 'waybar-battery-percentage'
+# kept across reboots, so turning the percentage off sticks
+STATE = Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'waybar-battery-percentage'
 DISCHARGING = ['󰁺', '󰁻', '󰁼', '󰁽', '󰁾', '󰁿', '󰂀', '󰂁', '󰂂', '󰁹']
 CHARGING = ['󰢜', '󰂆', '󰂇', '󰂈', '󰢝', '󰂉', '󰢞', '󰂊', '󰂋', '󰂅']
 
@@ -30,9 +31,9 @@ def amount(path, key):
 
 def visible():
     try:
-        return STATE.read_text().strip() == '1'
+        return STATE.read_text().strip() != '0'
     except OSError:
-        return False
+        return True
 
 
 def toggle():
@@ -40,7 +41,7 @@ def toggle():
     with STATE.open('a+') as state:
         fcntl.flock(state, fcntl.LOCK_EX)
         state.seek(0)
-        value = state.read().strip() != '1'
+        value = state.read().strip() == '0'
         state.seek(0)
         state.truncate()
         state.write('1' if value else '0')
