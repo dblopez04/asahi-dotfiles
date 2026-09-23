@@ -122,6 +122,8 @@ bindsym $mod+r exec $menu
 bindsym $mod+space exec ~/.local/bin/spotlight.py
 # clipboard history picker
 bindsym $mod+Ctrl+v exec ~/.local/bin/clipboard-history.py pick
+# emoji picker, like Ctrl+Cmd+Space on macOS
+bindsym $mod+Ctrl+space exec ~/.local/bin/emoji-picker.py
 # copy the color of any pixel on screen
 bindsym $mod+Shift+p exec ~/.local/bin/color-picker.sh
 # every shortcut, grouped (press any key to close)
