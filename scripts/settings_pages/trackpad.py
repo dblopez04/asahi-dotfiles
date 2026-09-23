@@ -1,6 +1,26 @@
 import json
+import os
 
 from .common import Choice, Page, Slider, Toggle, label, row, run
+
+GESTURES = [("swipe:3:left", "3 fingers left"), ("swipe:3:right", "3 fingers right"), ("swipe:3:up", "3 fingers up"),
+            ("swipe:3:down", "3 fingers down"), ("swipe:4:left", "4 fingers left"), ("swipe:4:right", "4 fingers right"),
+            ("swipe:4:up", "4 fingers up"), ("swipe:4:down", "4 fingers down")]
+ACTIONS = [
+    ("nothing", None),
+    ("next workspace", "workspace next_on_output"),
+    ("previous workspace", "workspace prev_on_output"),
+    ("move window to next workspace", "move container to workspace next_on_output, workspace next_on_output"),
+    ("move window to previous workspace", "move container to workspace prev_on_output, workspace prev_on_output"),
+    ("spotlight", "exec ~/.local/bin/spotlight.py"),
+    ("notification center", "exec swaync-client -t -sw"),
+    ("keyboard shortcuts", "exec ~/.local/bin/cheatsheet.py"),
+    ("fullscreen", "fullscreen"),
+    ("float / tile", "floating toggle"),
+    ("show the scratchpad", "scratchpad show"),
+    ("clipboard history", "exec ~/.local/bin/clipboard-history.py pick"),
+    ("screenshot an area", "exec ~/.local/bin/screenshot.sh area"),
+]
 
 DEVICE = "type:touchpad"
 
@@ -34,6 +54,13 @@ class TrackpadPage(Page):
                             lambda v: self.set("click_method", v))
         self.add(row("click method", self.click))
 
+        self.section("gestures")
+        self.gestures = {}
+        for gesture, title in GESTURES:
+            choice = Choice([(name, name) for name, _command in ACTIONS], lambda v, g=gesture: self.set_gesture(g, v))
+            self.gestures[gesture] = choice
+            self.add(row(title, choice))
+
         self.section("speed")
         self.speed = Slider("pointer", lambda v: self.set("pointer_accel", f"{v:.2f}"),
                             lower=-1, upper=1, step=0.05, fmt="{:+.2f}", throttle=None)
@@ -45,8 +72,23 @@ class TrackpadPage(Page):
     def set(self, key, value):
         self.stage(f"input {DEVICE} {key} {value}")
 
+    def set_gesture(self, gesture, action):
+        command = dict(ACTIONS)[action]
+        self.stage(f"bindgesture {gesture} {command}" if command else f"unbindgesture {gesture}")
+
     def refresh(self):
         state = libinput_state()
+        commands = {command: name for name, command in ACTIONS if command}
+        for gesture, choice in self.gestures.items():
+            line = self.sway(f"bindgesture {gesture}")
+            if line and line.split(maxsplit=1)[-1:] and line.startswith(gesture):
+                command = line[len(gesture):].strip()
+            else:
+                command = line or ""
+            name = commands.get(command.replace(os.path.expanduser("~"), "~"), "nothing" if not command else command)
+            if name not in dict(ACTIONS):
+                choice.set_options([(n, n) for n, _c in ACTIONS] + [(name, f"custom: {name[:30]}")])
+            choice.set_value(name)
         for key, toggle in self.switches.items():
             value = self.sway(f"input {DEVICE} {key}") or state.get(key, "disabled")
             toggle.set_active(value == "enabled")

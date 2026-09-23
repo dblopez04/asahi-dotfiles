@@ -8,7 +8,7 @@ Changes to the sway config are applied right away but kept as unsaved changes in
 ~/.config/sway/settings.conf until they're saved from the bar at the bottom (see dotconfig.py).
 
 Keys: up/down (or j/k) pick a category, right/enter/tab go into it,
-      esc/left go back to the sidebar, esc there closes, alt+1-9 jump to a category.
+      esc/left go back to the sidebar, esc there closes, alt+1-5 jump to a group.
 """
 import importlib
 import os
@@ -28,30 +28,32 @@ from settings_pages.common import V, button, dialog, label, load_theme  # noqa: 
 
 APP_ID = "dev.dotfiles.SettingsPanel"
 WAL = os.path.expanduser("~/.cache/wal")
-WIDTH, HEIGHT = 980, 660
+WIDTH, HEIGHT = 980, 740
 
-# (module in settings_pages, class) in sidebar order
+# (module in settings_pages, class, sidebar group) in sidebar order
 PAGES = [
-    ("network", "WifiPage"),
-    ("bluetooth", "BluetoothPage"),
-    ("sound", "SoundPage"),
-    ("displays", "DisplayPage"),
-    ("trackpad", "TrackpadPage"),
-    ("keyboard", "KeyboardPage"),
-    ("appearance", "AppearancePage"),
-    ("wallpaper", "WallpaperPage"),
-    ("toolbar", "ToolbarPage"),
-    ("notifications", "NotificationsPage"),
-    ("idle", "IdlePage"),
-    ("battery", "BatteryPage"),
-    ("storage", "StoragePage"),
-    ("datetime", "DateTimePage"),
-    ("defaults", "DefaultAppsPage"),
-    ("tailscale", "TailscalePage"),
-    ("packages", "PackagesPage"),
-    ("maintenance", "MaintenancePage"),
-    ("backups", "BackupsPage"),
-    ("about", "AboutPage"),
+    ("network", "WifiPage", "connections"),
+    ("bluetooth", "BluetoothPage", "connections"),
+    ("tailscale", "TailscalePage", "connections"),
+    ("sound", "SoundPage", "devices"),
+    ("displays", "DisplayPage", "devices"),
+    ("trackpad", "TrackpadPage", "devices"),
+    ("keyboard", "KeyboardPage", "devices"),
+    ("battery", "BatteryPage", "devices"),
+    ("appearance", "AppearancePage", "personal"),
+    ("wallpaper", "WallpaperPage", "personal"),
+    ("toolbar", "ToolbarPage", "personal"),
+    ("notifications", "NotificationsPage", "personal"),
+    ("idle", "IdlePage", "system"),
+    ("datetime", "DateTimePage", "system"),
+    ("defaults", "DefaultAppsPage", "system"),
+    ("windowrules", "WindowRulesPage", "system"),
+    ("storage", "StoragePage", "system"),
+    ("packages", "PackagesPage", "manage"),
+    ("maintenance", "MaintenancePage", "manage"),
+    ("dotfiles", "DotfilesPage", "manage"),
+    ("backups", "BackupsPage", "manage"),
+    ("about", "AboutPage", "manage"),
 ]
 
 CSS = """
@@ -80,10 +82,12 @@ window.settings-panel > .frame, window.settings-dialog > .frame { border: 1px so
 .mono { font-family: "BlexMono Nerd Font", monospace; }
 
 /* sidebar: the fuzzel list. The selection is dimmed while the keyboard is in a page. */
-list.sidebar { background: transparent; color: $fg; padding: 8px; }
-list.sidebar row { background: transparent; color: $fg; padding: 3px 8px; min-height: 0; }
+list.sidebar { background: transparent; color: $fg; padding: 6px 8px; }
+list.sidebar row { background: transparent; color: $fg; padding: 1px 8px; min-height: 0; }
 list.sidebar row:hover { background: $hover; }
 list.sidebar row:selected { background: $faint; color: $fg; }
+list.sidebar .group { color: $dim; font-size: 9pt; padding: 8px 8px 1px 8px; }
+list.sidebar row:first-child .group { padding-top: 2px; }
 list.sidebar:focus-within row:selected { background: $sel; color: $sel_fg; }
 list.sidebar:focus-within row:selected .dim { color: $sel_fg; }
 
@@ -178,19 +182,24 @@ class Panel(Gtk.ApplicationWindow):
         self.sidebar = Gtk.ListBox(css_classes=["sidebar"], selection_mode=Gtk.SelectionMode.BROWSE)
         self.stack = Gtk.Stack(hexpand=True, vexpand=True)
         self.pages = []
-        for module_name, class_name in PAGES:
+        self.group_starts = []  # index of the first page in each group, for alt+number
+        for module_name, class_name, group in PAGES:
             try:
                 cls = getattr(importlib.import_module(f"settings_pages.{module_name}"), class_name)
                 page = cls(self)
             except Exception as e:  # one broken page shouldn't take the panel down
                 print(f"settings: {module_name}: {e!r}", file=sys.stderr)
                 continue
+            if not self.pages or self.pages[-1].group != group:
+                self.group_starts.append(len(self.pages))
+            page.group = group
             self.pages.append(page)
             self.sidebar.append(Gtk.ListBoxRow(child=label(page.name)))
             scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=page)
             page.scroller = scroller
             self.stack.add_named(scroller, page.name)
         self.sidebar.connect("row-selected", self._row_selected)
+        self.sidebar.set_header_func(self._group_header)
         sidebar_scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=self.sidebar,
                                               width_request=190)
         body.append(sidebar_scroller)
@@ -220,6 +229,14 @@ class Panel(Gtk.ApplicationWindow):
         self.update_pending()
 
     # ----- pages -----
+
+    def _group_header(self, row, before):
+        """A group title above the first page of each group."""
+        group = self.pages[row.get_index()].group
+        if before is None or self.pages[before.get_index()].group != group:
+            row.set_header(label(group, "group"))
+        else:
+            row.set_header(None)
 
     def show_page(self, name):
         index = next((i for i, page in enumerate(self.pages) if page.name == name
@@ -317,7 +334,8 @@ class Panel(Gtk.ApplicationWindow):
         self.set_focus_visible(True)
 
         if mods == Gdk.ModifierType.ALT_MASK and len(name) == 1 and name in "123456789":
-            self.select(int(name) - 1)
+            if int(name) <= len(self.group_starts):
+                self.select(self.group_starts[int(name) - 1])
             return True
         if mods == Gdk.ModifierType.CONTROL_MASK and name == "s" and dotconfig.pending_count():
             self.save_pending()

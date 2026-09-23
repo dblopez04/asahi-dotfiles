@@ -187,6 +187,12 @@ bindsym $mod+Shift+s move scratchpad
 bindsym --whole-window $mod+button5 workspace next_on_output
 bindsym --whole-window $mod+button4 workspace prev_on_output
 
+# Trackpad gestures (change them in Settings > trackpad)
+bindgesture swipe:3:left workspace next_on_output
+bindgesture swipe:3:right workspace prev_on_output
+bindgesture swipe:4:left move container to workspace next_on_output, workspace next_on_output
+bindgesture swipe:4:right move container to workspace prev_on_output, workspace prev_on_output
+
 # Move/resize windows with mod + left/right drag
 floating_modifier $mod normal
 
@@ -229,6 +235,8 @@ for_window [app_id="walcalc"] floating enable
 for_window [app_id="^dev\.dotfiles\.(SettingsPanel|WallpaperPicker)$"] floating enable, move position center
 for_window [app_id="^dev\.dotfiles\.QuickLook$"] floating enable, move position center
 for_window [app_id="^dev\.dotfiles\.Cheatsheet$"] floating enable, border none, move position center
+# picture-in-picture video: floats in the bottom right corner and follows you across workspaces
+for_window [app_id="^(firefox|org\.mozilla\.firefox)$" title="^Picture-in-Picture$"] floating enable, sticky enable, border none, resize set 480 270, move position 100 ppt 100 ppt, move left 496 px, move up 286 px
 for_window [app_id="^dev\.dotfiles\.Spotlight$"] floating enable, border none, move position center, move up 180 px
 
 ###########

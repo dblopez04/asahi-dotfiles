@@ -156,6 +156,12 @@ def sway_key(line):
     if head in ("bindsym", "bindcode", "unbindsym", "unbindcode"):
         rest = [t for t in tokens[1:] if not t.startswith("--")]
         return f"{head.removeprefix('un')} {rest[0].lower()}" if rest else None
+    if head == "for_window":
+        match = re.match(r"\s*for_window\s+(\[.*?\])", line)
+        return f"for_window {match.group(1)}" if match else None
+    if head in ("bindgesture", "unbindgesture"):
+        rest = [t for t in tokens[1:] if not t.startswith("--")]
+        return f"bindgesture {rest[0].lower()}" if rest else None
     if head in ("input", "seat") and len(tokens) >= 3:
         return f"{head} {tokens[1]} {tokens[2]}"
     if head == "output" and len(tokens) >= 3:
@@ -248,7 +254,8 @@ def merge_sway(config, pending):
     lines = config.splitlines()
     for key, new in pending.items():
         tokens = _tokens(new)
-        remove = tokens[0].startswith("un")
+        # unbind*, or a window rule staged as "nop" (sway has no way to delete one live)
+        remove = tokens[0].startswith("un") or (tokens[0] == "for_window" and new.rstrip().endswith("] nop"))
         block_head = f"{tokens[0]} {tokens[1]}" if tokens[0] in ("input", "seat", "output") else None
         replaced = False
         info = _blocks(lines)
