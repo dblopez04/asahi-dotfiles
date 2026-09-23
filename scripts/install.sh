@@ -23,13 +23,6 @@ done
 export PATH="$HOME/.local/bin:$PATH"
 step() { printf '\n\033[1;32m==>\033[0m %s\n' "$*"; }
 clone() { [ -d "$2" ] || git clone -q --depth 1 "$1" "$2"; }
-# release downloads come in aarch64 (Apple Silicon) and x86_64 builds
-ARCH=$(uname -m)
-case $ARCH in
-    aarch64|arm64) ARCH=aarch64 LAZYGIT_ARCH=arm64 ;;
-    x86_64) LAZYGIT_ARCH=x86_64 ;;
-    *) echo "unsupported architecture: $ARCH" >&2; exit 1 ;;
-esac
 github_asset_url() { # repo, exact asset name
     curl -fsSL "https://api.github.com/repos/$1/releases/latest" \
         | jq -r --arg name "$2" '.assets[] | select(.name == $name) | .browser_download_url'
@@ -151,7 +144,7 @@ mkdir -p "$HOME/.local/bin"
 step "Installing lazygit"
 if ! command -v lazygit >/dev/null; then
     url=$(curl -fsSL https://api.github.com/repos/jesseduffield/lazygit/releases/latest \
-        | jq -r '.assets[].browser_download_url | select(test("linux_'"$LAZYGIT_ARCH"'\\.tar\\.gz$"))')
+        | jq -r '.assets[].browser_download_url | select(test("linux_arm64\\.tar\\.gz$"))')
     curl -fsSL "$url" | tar -xz -C "$HOME/.local/bin" lazygit
 fi
 
@@ -163,8 +156,8 @@ fi
 step "Installing OpenAI Codex"
 if ! command -v codex >/dev/null; then
     tmp=$(mktemp -d)
-    curl -fsSL "$(github_asset_url openai/codex "codex-$ARCH-unknown-linux-musl.tar.gz")" | tar -xz -C "$tmp"
-    install -m 755 "$tmp/codex-$ARCH-unknown-linux-musl" "$HOME/.local/bin/codex"
+    curl -fsSL "$(github_asset_url openai/codex codex-aarch64-unknown-linux-musl.tar.gz)" | tar -xz -C "$tmp"
+    install -m 755 "$tmp/codex-aarch64-unknown-linux-musl" "$HOME/.local/bin/codex"
     rm -rf "$tmp"
 fi
 

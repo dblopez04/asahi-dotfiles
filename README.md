@@ -17,7 +17,7 @@ A Sway desktop for Fedora Asahi Remix on an Apple Silicon MacBook, set up to fee
 
 ## Installation
 
-The [installer](scripts/install.sh) targets Fedora Asahi Remix, and also downloads x86_64 builds on Intel/AMD Fedora. The checkout can live anywhere and nothing depends on your username: Stow links into your home directory, and the few files that need absolute paths are made when you run the installer.
+The [installer](scripts/install.sh) targets Fedora Asahi Remix and downloads ARM64 builds of some tools. The checkout can live anywhere and nothing depends on your username: Stow links into your home directory, and the few files that need absolute paths are made when you run the installer.
 
 ```sh
 git clone https://github.com/dblopez04/asahi-dotfiles.git ~/dotfiles
@@ -365,7 +365,7 @@ GNU Stow links the configuration into your home directory. The links to pywal's 
 
 - **Display:** set the scale in Settings → displays, or change `output eDP-1 scale` in the Sway config. Pick a scale that divides the 2560x1600 panel evenly; others leave a glitchy row at the bottom.
 - **Session environment:** [`sway-session`](scripts/sway-session) makes Qt apps follow the GTK theme, runs Electron and Firefox as native Wayland apps, and puts `~/.local/bin` on the PATH. The installer copies it to `/usr/local/bin`, so run the installer again, or reinstall it by hand, after editing.
-- **Hardware:** check the installer's Apple keyboard settings and the M1 Air function-key bindings before using this on another machine.
+- **Hardware:** check the installer's Apple keyboard settings, ARM64 downloads, and the M1 Air function-key bindings before using this on another machine.
 - **Shell:** aliases include `v` for Neovim, `cd` for zoxide, `ls` for eza, and `lg` for lazygit.
 - **Neovim:** see its [README](.config/nvim/README.md) for editor-specific setup.
 
