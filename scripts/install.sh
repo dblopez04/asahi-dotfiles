@@ -209,6 +209,8 @@ fi
 if systemctl --user show-environment >/dev/null 2>&1; then
     systemctl --user daemon-reload
     systemctl --user enable --now usage-sampler.service
+    # receive Taildrop files into ~/Downloads
+    systemctl --user enable --now taildrop-receive.service
 fi
 
 step "Setting zsh as the login shell"

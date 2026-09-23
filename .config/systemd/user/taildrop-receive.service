@@ -1,0 +1,11 @@
+[Unit]
+Description=Receive Taildrop files into ~/Downloads
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/taildrop.py receive
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=default.target
