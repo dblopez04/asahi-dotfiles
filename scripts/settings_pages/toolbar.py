@@ -2,24 +2,30 @@ import json
 import os
 import re
 
+from gi.repository import Gtk
+
 import dotconfig
 
-from .common import HOME, Choice, Page, Slider, Toggle, label, row, run
+from .common import HOME, Choice, Page, Slider, Toggle, button, label, row, run
 
 TEMPLATE = os.path.join(HOME, ".config/wal/templates/waybar-config.jsonc")
+LOCATION_FILE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local/state"), "weather-location")
 RENDERED = os.path.join(HOME, ".cache/wal/waybar-config.jsonc")
 RENDER = f"sed 's/{{{{/{{/g; s/}}}}/}}/g' {TEMPLATE} > {RENDERED} && pkill -SIGUSR2 -x waybar"
 MODULES = [
-    ("sway/workspaces", "workspaces"), ("custom/clock", "clock"), ("idle_inhibitor", "stay awake button"),
+    ("sway/workspaces", "workspaces"), ("custom/now-playing", "now playing"), ("custom/clock", "clock"),
+    ("custom/timer", "timers"), ("custom/stay-awake", "stay awake icon"),
     ("custom/notification", "notifications"), ("group/tray-expander", "tray"), ("custom/agents", "coding agents"),
+    ("custom/weather", "weather"), ("custom/network-speed", "network speed"), ("custom/system", "cpu & memory"),
     ("bluetooth", "bluetooth"), ("network", "wi-fi"), ("custom/tailscale", "tailscale"),
     ("custom/audio", "volume"), ("custom/battery", "battery"),
 ]
 # where a module goes back to when it's turned on again
 HOMES = {name: section for section, names in (
-    ("modules-left", ["sway/workspaces", "sway/mode"]),
-    ("modules-center", ["custom/clock", "idle_inhibitor", "custom/notification"]),
-    ("modules-right", ["group/tray-expander", "custom/agents", "bluetooth", "network", "custom/tailscale",
+    ("modules-left", ["sway/workspaces", "sway/mode", "custom/now-playing"]),
+    ("modules-center", ["custom/clock", "custom/timer", "custom/stay-awake", "custom/notification"]),
+    ("modules-right", ["group/tray-expander", "custom/agents", "custom/weather", "custom/network-speed",
+                       "custom/system", "bluetooth", "network", "custom/tailscale",
                        "custom/audio", "custom/battery"])) for name in names}
 ORDER = [name for name, _ in MODULES]
 
@@ -87,8 +93,21 @@ class ToolbarPage(Page):
             toggle = Toggle(lambda on, name=name: self.set_module(name, on))
             self.modules[name] = toggle
             self.add(row(title, toggle))
+        self.section("weather")
+        self.location = Gtk.Entry(placeholder_text="detected automatically", hexpand=True)
+        self.location.connect("activate", lambda _e: self.save_location())
+        self.add(row("location", self.location, button("set", self.save_location),
+                     sub=label("a city or zip code", "dim")))
         self.note = label("", "dim", "row")
         self.add(self.note)
+
+    def save_location(self):
+        os.makedirs(os.path.dirname(LOCATION_FILE), exist_ok=True)
+        with open(LOCATION_FILE, "w") as f:
+            f.write(self.location.get_text().strip() + "\n")
+        # the weather module restarts on its own and fetches the new place
+        run("pkill", "-f", "sysinfo.py weather")
+        self.note.set_label("weather location saved")
 
     def with_config(self, action):
         config = load_config()
@@ -108,6 +127,12 @@ class ToolbarPage(Page):
         fmt = clock_format(config)
         self.twelve.set_active("%I" in fmt or "%l" in fmt)
         self.date.set_active("%b" in fmt or "%d" in fmt or "%A" in fmt)
+        if not self.location.has_focus():
+            try:
+                with open(LOCATION_FILE) as f:
+                    self.location.set_text(f.read().strip())
+            except OSError:
+                pass
         shown = set(config.get("modules-left", []) + config.get("modules-center", []) + config.get("modules-right", []))
         for name, toggle in self.modules.items():
             toggle.set_active(name in shown)

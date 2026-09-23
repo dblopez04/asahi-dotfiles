@@ -6,11 +6,13 @@
 	"spacing": 0,
 	"modules-left": [
 		"sway/workspaces",
-		"sway/mode"
+		"sway/mode",
+		"custom/now-playing"
 	],
 	"modules-center": [
 		"custom/clock",
-		"idle_inhibitor",
+		"custom/timer",
+		"custom/stay-awake",
 		"custom/notification"
 	],
 	"modules-right": [
@@ -41,14 +43,44 @@
 		"on-click": "swaync-client -t -sw",
 		"tooltip": false
 	}},
-	"idle_inhibitor": {{
-		"format": "{{icon}}",
-		"format-icons": {{
-			"activated": "",
-			"deactivated": ""
-		}},
-		"tooltip-format-activated": "staying awake",
-		"tooltip-format-deactivated": ""
+	"custom/now-playing": {{
+		"exec": "~/.local/bin/now-playing.py",
+		"return-type": "json",
+		"restart-interval": 5,
+		"on-click": "playerctl play-pause",
+		"on-click-right": "playerctl next",
+		"on-click-middle": "playerctl previous",
+		"max-length": 45
+	}},
+	"custom/timer": {{
+		"exec": "~/.local/bin/timer.py bar",
+		"return-type": "json",
+		"restart-interval": 5,
+		"signal": 15,
+		"on-click": "~/.local/bin/timer.py menu"
+	}},
+	"custom/weather": {{
+		"exec": "~/.local/bin/sysinfo.py weather",
+		"return-type": "json",
+		"restart-interval": 60
+	}},
+	"custom/network-speed": {{
+		"exec": "~/.local/bin/sysinfo.py net",
+		"return-type": "json",
+		"restart-interval": 10
+	}},
+	"custom/system": {{
+		"exec": "~/.local/bin/sysinfo.py system",
+		"return-type": "json",
+		"restart-interval": 10,
+		"on-click": "kitty --class btop -e btop"
+	}},
+	"custom/stay-awake": {{
+		"exec": "~/.local/bin/stay-awake.sh status",
+		"return-type": "json",
+		"interval": 30,
+		"signal": 14,
+		"on-click": "~/.local/bin/stay-awake.sh off"
 	}},
 	"custom/notification": {{
 		"exec": "swaync-client -swb",
