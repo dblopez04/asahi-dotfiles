@@ -49,7 +49,7 @@ PACKAGES=(
     # walcalc, walwrite (webkitgtk and markdown render its preview), the settings panel and wallpaper picker
     python3-gobject gtk4 webkitgtk6.0 python3-markdown fwupd
     # this script
-    stow git curl tar xz
+    stow git curl tar xz desktop-file-utils
 )
 
 if $USE_SUDO; then
@@ -160,6 +160,8 @@ mkdir -p "$HOME/.config" "$HOME/.local/share" "$HOME/.local/share/applications" 
 settings_conf="$DOTFILES/.config/sway/settings.conf"
 [ -e "$settings_conf" ] || printf '# Unsaved changes from the settings panel.\n' > "$settings_conf"
 (cd "$DOTFILES" && stow --restow .)
+# GIO only learns an entry's MimeType from this cache, so without it walwrite can't be picked as the text editor
+command -v update-desktop-database >/dev/null && update-desktop-database "$HOME/.local/share/applications"
 
 step "Linking scripts into ~/.local/bin"
 for script in "$DOTFILES"/scripts/*; do

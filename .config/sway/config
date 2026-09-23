@@ -204,7 +204,6 @@ for_window [app_id="org.kde.ark"] floating enable
 for_window [app_id="org.pulseaudio.pavucontrol"] floating enable, resize set 900 560
 for_window [class="feh"] floating enable, resize set 80 ppt 80 ppt, move position center
 for_window [app_id="walcalc"] floating enable
-for_window [app_id="^(dev\.dotfiles\.)?walwrite$"] floating enable
 # settings and wallpaper picker: movable windows that stay open until closed
 for_window [app_id="^dev\.dotfiles\.(SettingsPanel|WallpaperPicker)$"] floating enable, move position center
 

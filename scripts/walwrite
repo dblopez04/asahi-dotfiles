@@ -67,6 +67,7 @@ SHORTCUTS = [
     ("Ctrl+F / Ctrl+H", "Find / replace"),
     ("Ctrl+B / Ctrl+I / Ctrl+K", "Bold / italic / link"),
     ("Ctrl+= / Ctrl+- / Ctrl+0", "Text size"),
+    ("Ctrl+Alt+= / Ctrl+Alt+- / Ctrl+Alt+0", "Interface size"),
     ("Ctrl+P", "Print"),
     ("F11", "Fullscreen"),
     ("Alt", "Menu bar"),
@@ -235,6 +236,15 @@ def render_inline(text):
     return re.sub(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], text)
 
 
+TABLE_RULE = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$")
+
+
+def interrupts_paragraph(lines, i):
+    """Whether lines[i] starts a heading, fence, quote, list or table rather than continuing a paragraph."""
+    return bool(re.match(r"^(#{1,6}\s|\s*(```|~~~)|\s*>|\s*([-+*]|1[.)])\s+\S)", lines[i])) or bool(
+        "|" in lines[i] and i + 1 < len(lines) and TABLE_RULE.match(lines[i + 1]))
+
+
 def markdown_blocks(text):
     """A small CommonMark-ish block parser: [(kind, data)] for headings, paragraphs, lists,
     quotes, fenced code, rules and tables. Used when python-markdown isn't installed."""
@@ -286,7 +296,7 @@ def markdown_blocks(text):
             start = int(item.group(2)[:-1]) if ordered else 1
             blocks.append(("list", (ordered, start, items)))
             continue
-        if "|" in line and i + 1 < len(lines) and re.match(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$", lines[i + 1]):
+        if "|" in line and i + 1 < len(lines) and TABLE_RULE.match(lines[i + 1]):
             split = lambda row: [cell.strip() for cell in row.strip().strip("|").split("|")]
             header, rows, i = split(line), [], i + 2
             while i < len(lines) and "|" in lines[i] and lines[i].strip():
@@ -295,7 +305,7 @@ def markdown_blocks(text):
             blocks.append(("table", (header, rows)))
             continue
         body = []
-        while i < len(lines) and lines[i].strip() and not re.match(r"^(#{1,6}\s|\s*(```|~~~)|\s*>)", lines[i]):
+        while i < len(lines) and lines[i].strip() and not (body and interrupts_paragraph(lines, i)):
             body.append(lines[i])
             i += 1
         blocks.append(("paragraph", "\n".join(body)))
@@ -349,30 +359,23 @@ def markdown_to_html(text):
     return blocks_to_html(markdown_blocks(text))
 
 
-def markdown_to_pango(text):
-    """A light rendering for printing and the preview without WebKit."""
+PRINT_COLORS = {"code": "#ececec", "muted": "#999999", "link": "#000000", "quote": "#555555"}
+
+
+def markdown_to_pango(text, columns=80, colors=PRINT_COLORS):
+    """Markdown as one piece of Pango markup, for printing."""
+    sizes = {1: "xx-large", 2: "x-large", 3: "large"}
     out = []
-    for kind, data in markdown_blocks(text):
-        if kind == "heading":
-            size = {1: "xx-large", 2: "x-large", 3: "large"}.get(data[0], "medium")
-            out.append(f'<span size="{size}" weight="bold">{pango_inline(data[1])}</span>')
-        elif kind == "paragraph":
-            out.append("\n".join(pango_inline(l) for l in data.split("\n")))
+    for kind, markup, indent, _hang, tight in markdown_segments(text, columns, colors):
+        prefix = " " * indent
+        if kind.startswith("heading"):
+            markup = f'<span size="{sizes.get(int(kind[7:]), "medium")}" weight="bold">{markup}</span>'
         elif kind == "code":
-            out.append(f"<tt>{escape_markup(data[1])}</tt>")
-        elif kind == "rule":
-            out.append("<span alpha=\"50%\">" + "─" * 40 + "</span>")
-        elif kind == "quote":
-            out.append("<i>" + re.sub(r"<[^>]+>", "", blocks_to_html(data)) + "</i>")
-        elif kind == "list":
-            ordered, start, items = data
-            out.append("\n".join(f"  {f'{start + n}.' if ordered else '•'} {pango_inline(' '.join(item))}"
-                                 for n, item in enumerate(items)))
-        elif kind == "table":
-            header, rows = data
-            out.append("\n".join("<tt>" + "  │  ".join(escape_markup(c) for c in row) + "</tt>"
-                                 for row in [header] + rows))
-    markup = "\n\n".join(out)
+            prefix += "    "
+            markup = "\n".join(f'<span background="{colors["code"]}">{line}</span>' for line in markup.split("\n"))
+        markup = "\n".join(prefix + line for line in markup.split("\n"))
+        out.append((("\n" if tight else "\n\n") if out else "") + markup)
+    markup = "".join(out)
     try:
         Pango.parse_markup(markup, -1, "\0")
     except GLib.Error:
@@ -380,13 +383,139 @@ def markdown_to_pango(text):
     return markup
 
 
-def pango_inline(line):
-    text = escape_markup(line)
-    text = re.sub(r"`([^`]+)`", r"<tt>\1</tt>", text)
+def markdown_segments(text, columns, colors, blocks=None, indent=0, tight=False):
+    """Markdown as Pango markup for printing and the preview without WebKit: (kind, markup, indent, hang,
+    tight) per block. kind is heading1-6, paragraph, code, rule, table or item; indent is in characters and
+    hang is how far a list item's wrapped lines sit past its marker; tight blocks have no blank line before."""
+    for kind, data in markdown_blocks(text) if blocks is None else blocks:
+        if kind == "heading":
+            segments = [(f"heading{data[0]}", pango_inline(data[1], colors), indent, 0, tight)]
+        elif kind == "paragraph":
+            segments = [("paragraph", "\n".join(pango_inline(l.strip(), colors) for l in data.split("\n")),
+                         indent, 0, tight)]
+        elif kind == "code":
+            segments = [("code", escape_markup(data[1]), indent, 0, tight)]
+        elif kind == "rule":
+            segments = [("rule", f'<span foreground="{colors["muted"]}">{"─" * max(columns - indent, 3)}</span>',
+                         indent, 0, tight)]
+        elif kind == "table":
+            segments = [("table", table_markup(*data, max(columns - indent, 10), colors), indent, 0, tight)]
+        elif kind == "quote":
+            segments = [(k, f'<span foreground="{colors["quote"]}">{m}</span>', *rest)
+                        for k, m, *rest in markdown_segments(None, columns, colors, data, indent + 2, tight)]
+        elif kind == "list":
+            ordered, start, items = data
+            segments = []
+            for n, item in enumerate(items):
+                marker = f"{start + n}." if ordered else "•"
+                task = re.match(r"^\[([ xX])\]\s+(.*)", item[0])
+                if task:
+                    marker, item = ("☐" if task.group(1) == " " else "☑"), [task.group(2)] + item[1:]
+                inner = markdown_blocks("\n".join(item))
+                first = inner.pop(0)[1] if inner and inner[0][0] == "paragraph" else ""
+                body = pango_inline(" ".join(l.strip() for l in first.split("\n")), colors)
+                segments.append(("item", f'<span foreground="{colors["muted"]}">{marker}</span> {body}',
+                                 indent, len(marker) + 1, tight or n > 0))
+                segments += markdown_segments(None, columns, colors, inner, indent + len(marker) + 1, True)
+        else:
+            continue
+        for kind_, markup, *rest in segments:
+            try:
+                Pango.parse_markup(markup, -1, "\0")
+            except GLib.Error:  # overlapping emphasis and the like: keep the text, lose the styling
+                markup = re.sub(r"<[^>]+>", "", markup)
+            yield (kind_, markup, *rest)
+
+
+def pango_inline(text, colors):
+    """Inline Markdown to Pango markup: code, links, bold, italic, strikethrough."""
+    stash = []
+
+    def keep(fragment):
+        stash.append(fragment)
+        return f"\x00{len(stash) - 1}\x00"
+
+    link = f'<span underline="single" foreground="{colors["link"]}">'
+    text = re.sub(r"(`+)(.+?)(?<!`)\1(?!`)", lambda m: keep(
+        f'<span background="{colors["code"]}">{escape_markup(m.group(2).strip())}</span>'), text)
+    text = escape_markup(text)
+    text = re.sub(r"&lt;(https?://\S+?)&gt;", lambda m: keep(f"{link}{m.group(1)}</span>"), text)
+    text = re.sub(r"!?\[([^\]]+)\]\((?:\\.|[^)])+\)", lambda m: f"{link}{m.group(1)}</span>", text)
     text = re.sub(r"(\*\*|__)(.+?)\1", r"<b>\2</b>", text)
-    text = re.sub(r"(?<![*\w])\*([^*\n]+)\*(?!\*)", r"<i>\1</i>", text)
-    text = re.sub(r"!?\[([^\]]+)\]\([^)]*\)", r"<u>\1</u>", text)
-    return text
+    text = re.sub(r"(?<![*\w])\*([^*\n]+)\*(?!\*)|(?<![_\w])_([^_\n]+)_(?![_\w])",
+                  lambda m: f"<i>{m.group(1) or m.group(2)}</i>", text)
+    text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text)
+    return re.sub(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], text)
+
+
+def markup_width(markup):
+    return len(html.unescape(re.sub(r"<[^>]+>", "", markup)))
+
+
+def wrap_markup(markup, width):
+    """Word-wraps Pango markup to width characters, closing the open spans at each break and reopening them."""
+    lines, line, word, open_tags, used = [], [], [], [], 0
+
+    def emit(unit):
+        nonlocal used
+        if unit.startswith("</"):
+            open_tags.pop()
+        elif unit.startswith("<"):
+            open_tags.append(unit)
+        else:
+            used += 1
+        line.append(unit)
+
+    def break_line():
+        nonlocal line, used
+        lines.append("".join(line) + "".join(f"</{re.match(r'<(\w+)', t).group(1)}>" for t in reversed(open_tags)))
+        line, used = list(open_tags), 0
+
+    def flush_word():
+        length = sum(not unit.startswith("<") for unit in word)
+        if used and length:
+            if used + 1 + length > width:
+                break_line()
+            else:
+                emit(" ")
+        for unit in word:
+            if used >= width and not unit.startswith("<"):
+                break_line()
+            emit(unit)
+        word.clear()
+
+    for unit in re.findall(r"<[^>]+>|&\w+;|.", markup, re.S) + [" "]:
+        if unit.isspace():
+            flush_word()
+        else:
+            word.append(unit)
+    lines.append("".join(line))
+    return lines
+
+
+def table_markup(header, rows, columns, colors):
+    """A table drawn with box characters, its widest columns narrowed and wrapped until it fits columns."""
+    count = max(len(row) for row in [header] + rows)
+    cells = [[pango_inline(cell, colors) for cell in row + [""] * (count - len(row))] for row in [header] + rows]
+    cells[0] = [f"<b>{cell}</b>" for cell in cells[0]]
+    widths = [max(markup_width(row[i]) for row in cells) for i in range(count)]
+    while sum(widths) + 3 * count - 1 > columns and max(widths) > 4:
+        widths[widths.index(max(widths))] -= 1
+    bar = f'<span foreground="{colors["muted"]}">│</span>'
+    rule = f'<span foreground="{colors["muted"]}">{"┼".join("─" * (w + 2) for w in widths)}</span>'
+    wrapped = [[wrap_markup(cell, w) for cell, w in zip(row, widths)] for row in cells]
+    # rows that wrap onto several lines need rules between them to read as rows
+    ruled = any(len(cell) > 1 for row in wrapped[1:] for cell in row)
+    out = []
+    for n, row in enumerate(wrapped):
+        if n > 1 and ruled:
+            out.append(rule)
+        for k in range(max(len(cell) for cell in row)):
+            parts = [cell[k] if k < len(cell) else "" for cell in row]
+            out.append(bar.join(f" {part}{' ' * (w - markup_width(part))} " for part, w in zip(parts, widths)))
+        if n == 0:
+            out.append(rule)
+    return "\n".join(out)
 
 
 # ---------- theme ----------
@@ -410,22 +539,31 @@ def mix(base, tint, amount):
     return "#%02x%02x%02x" % tuple(round(x + (y - x) * amount) for x, y in zip(a, b))
 
 
-def theme_css(p, font_size):
+def scale_css(css, scale):
+    """Multiplies every pt and px size in css, leaving hairline borders alone."""
+    return re.sub(r"(?<![\w.#-])(\d+(?:\.\d+)?)(pt|px)\b", lambda m: m.group() if m.group() == "1px"
+                  else f"{round(float(m.group(1)) * scale, 2):g}{m.group(2)}", css)
+
+
+def theme_css(p, font_size, ui_scale=1.0):
     bg, fg, accent = p["background"], p["foreground"], p["accent"]
     muted = mix(bg, fg, 0.5)
     raised = mix(bg, fg, 0.04)
     line = mix(bg, fg, 0.12)
-    return f"""
-window.walwrite, window.walwrite-dialog {{ background-color: {bg}; color: {fg}; }}
-window.walwrite-dialog {{ border: 1px solid {accent}; }}
-.walwrite label, .walwrite entry, .walwrite-dialog label, button.square, .walwrite popovermenubar,
-.walwrite popover {{ font-family: "{FONT_FAMILY}", monospace; }}
+    # the text has its own zoom; ui_scale sizes everything around it
+    text = f"""
 .walwrite textview.editor, .walwrite textview.editor text, .walwrite textview.preview, .walwrite textview.preview text {{
     background-color: {bg}; color: {fg}; caret-color: {fg};
     font-family: "{FONT_FAMILY}", monospace; font-size: {font_size}pt;
 }}
-.walwrite textview text selection, .walwrite entry selection {{ background-color: {accent}; color: {bg}; }}
 .walwrite .placeholder {{ color: {muted}; font-size: {font_size}pt; }}
+"""
+    return text + scale_css(f"""
+window.walwrite, window.walwrite-dialog {{ background-color: {bg}; color: {fg}; font-size: 10pt; }}
+window.walwrite-dialog {{ border: 1px solid {accent}; }}
+.walwrite label, .walwrite entry, .walwrite-dialog label, button.square, .walwrite popovermenubar,
+.walwrite popover {{ font-family: "{FONT_FAMILY}", monospace; }}
+.walwrite textview text selection, .walwrite entry selection {{ background-color: {accent}; color: {bg}; }}
 
 /* menu bar: hidden until Alt */
 .walwrite popovermenubar {{ background-color: {raised}; border-bottom: 1px solid {line}; padding: 0 6px; }}
@@ -442,6 +580,7 @@ window.walwrite-dialog {{ border: 1px solid {accent}; }}
 /* sidebar */
 .walwrite .sidebar {{ background-color: {raised}; border-right: 1px solid {line}; }}
 .walwrite .sidebar .section {{ color: {muted}; font-size: 8.5pt; padding: 12px 12px 4px 12px; }}
+.walwrite .sidebar .header {{ padding-right: 8px; }}
 .walwrite .sidebar list, .walwrite .sidebar listview {{ background: none; color: {fg}; }}
 .walwrite .sidebar row {{ padding: 3px 8px 3px 12px; border-radius: 0; min-height: 0; }}
 .walwrite .sidebar row:hover {{ background-color: {line}; }}
@@ -495,7 +634,7 @@ button.square:disabled {{ opacity: 0.5; }}
 .walwrite-dialog .dialog-body {{ color: {fg}; font-size: 9.75pt; }}
 .walwrite scrollbar, .walwrite-dialog scrollbar {{ background: none; border: none; }}
 .walwrite scrollbar slider {{ background-color: {mix(bg, fg, 0.3)}; border-radius: 0; min-width: 4px; min-height: 4px; }}
-"""
+""", ui_scale)
 
 
 def preview_css(p, font_size):
@@ -958,7 +1097,7 @@ class Sidebar(Gtk.Box):
         self.folder = None
         self.rows = {}
 
-        header = Gtk.Box()
+        header = Gtk.Box(css_classes=["header"])
         header.append(Gtk.Label(label="OPEN", xalign=0, hexpand=True, css_classes=["section"]))
         new = Gtk.Button(label="", tooltip_text="New document (Ctrl+N)", valign=Gtk.Align.END)
         new.connect("clicked", lambda _b: window.activate_action("win.new-document"))
@@ -968,7 +1107,7 @@ class Sidebar(Gtk.Box):
         self.documents.connect("row-activated", lambda _l, row: window.show_document(row.document))
         self.append(self.documents)
 
-        folder_header = Gtk.Box()
+        folder_header = Gtk.Box(css_classes=["header"])
         self.folder_label = Gtk.Label(label="FILES", xalign=0, hexpand=True, css_classes=["section"],
                                       ellipsize=Pango.EllipsizeMode.START)
         folder_header.append(self.folder_label)
@@ -1117,8 +1256,13 @@ class Preview(Gtk.Box):
                                      pixels_below_lines=LINE_GAP, pixels_inside_wrap=4,
                                      left_margin=48, right_margin=48, top_margin=36, bottom_margin=200)
             self.text.add_css_class("preview")
-            self.append(Gtk.ScrolledWindow(child=self.text, hexpand=True, vexpand=True,
-                                           hscrollbar_policy=Gtk.PolicyType.NEVER))
+            scroller = Gtk.ScrolledWindow(child=self.text, hexpand=True, vexpand=True,
+                                          hscrollbar_policy=Gtk.PolicyType.NEVER)
+            self.append(scroller)
+            # tables are laid out for the width, so render again when it changes
+            scroller.get_hadjustment().connect("notify::page-size", lambda *_: self._on_resize())
+            self.columns = 0  # what the last Markdown render was laid out for
+            self.resize_pending = False
 
     def render(self, document, palette, font_size):
         text = document.text()
@@ -1129,11 +1273,67 @@ class Preview(Gtk.Box):
             base = Gio.File.new_for_path(os.path.dirname(document.path)).get_uri() + "/" if document.path else None
             # keep the scroll position across re-renders
             self.web.evaluate_javascript("window.scrollY", -1, None, None, None, self._reload, (page, base))
+        elif is_markdown(document.path):
+            self._render_markdown(text, palette)
         else:
-            buffer = self.text.get_buffer()
-            buffer.set_text("")
-            markup = markdown_to_pango(text) if is_markdown(document.path) else escape_markup(text)
-            buffer.insert_markup(buffer.get_start_iter(), markup, -1)
+            self.text.get_buffer().set_text(text)
+
+    def _char_width(self):
+        return self.text.create_pango_layout("0" * 50).get_pixel_size()[0] / 50 or 8
+
+    def _columns(self):
+        width = self.text.get_width() - self.text.get_left_margin() - self.text.get_right_margin()
+        return max(20, int(width / self._char_width()) - 1) if width > 0 else 80
+
+    def _on_resize(self):
+        if self.columns and not self.resize_pending and self.get_visible() and self._columns() != self.columns:
+            self.resize_pending = True
+            GLib.idle_add(self._rerender)
+
+    def _rerender(self):
+        self.resize_pending = False
+        self.window.refresh_preview()
+        return False
+
+    def _tag(self, name, **properties):
+        table = self.text.get_buffer().get_tag_table()
+        tag = table.lookup(name)
+        if tag is None:
+            tag = Gtk.TextTag(name=name)
+            table.add(tag)
+        for key, value in properties.items():
+            tag.set_property(key.replace("_", "-"), value)
+        return tag
+
+    def _render_markdown(self, text, palette):
+        bg, fg, accent = palette["background"], palette["foreground"], palette["accent"]
+        colors = {"code": mix(bg, fg, 0.1), "muted": mix(bg, fg, 0.4), "link": accent, "quote": mix(bg, fg, 0.7)}
+        buffer = self.text.get_buffer()
+        buffer.set_text("")
+        self.columns, char, margin = self._columns(), self._char_width(), self.text.get_left_margin()
+        scales = {1: 1.6, 2: 1.35, 3: 1.15}
+        for kind, markup, indent, hang, tight in markdown_segments(text, self.columns, colors):
+            if buffer.get_char_count() and not tight:
+                buffer.insert_with_tags(buffer.get_end_iter(), "\n", self._tag("gap", scale=0.6))
+            start = buffer.get_char_count()
+            # a code block gets a short empty line above and below inside its background
+            buffer.insert_markup(buffer.get_end_iter(), f"\n{markup}\n\n" if kind == "code" else markup + "\n", -1)
+            tags = [self._tag(f"indent-{indent}-{hang}", left_margin=margin + round((indent + hang) * char),
+                              indent=-round(hang * char))]
+            if kind.startswith("heading"):
+                tags.append(self._tag(kind, weight=Pango.Weight.BOLD, scale=scales.get(int(kind[7:]), 1.0),
+                                      pixels_above_lines=LINE_GAP * 2))
+            elif kind in ("code", "table"):
+                tags.append(self._tag("dense", pixels_below_lines=0, pixels_inside_wrap=0))
+            if kind == "code":
+                tags.append(self._tag("code-block", paragraph_background=mix(bg, fg, 0.06)))
+            for tag in tags:
+                buffer.apply_tag(tag, buffer.get_iter_at_offset(start), buffer.get_end_iter())
+            if kind == "code":
+                end = buffer.get_char_count()
+                for offset in (start, end - 1):
+                    buffer.apply_tag(self._tag("code-pad", scale=0.5), buffer.get_iter_at_offset(offset),
+                                     buffer.get_iter_at_offset(offset + 1))
 
     def _reload(self, web, result, page_and_base):
         page, base = page_and_base
@@ -1185,6 +1385,8 @@ MENUS = [
     ("_View", [
         [("Sidebar", "win.sidebar"), ("Rendered Markdown", "win.preview"), ("Side by Side", "win.split")],
         [("Bigger Text", "win.zoom-in"), ("Smaller Text", "win.zoom-out"), ("Reset Text Size", "win.zoom-reset")],
+        [("Bigger Interface", "win.interface-bigger"), ("Smaller Interface", "win.interface-smaller"),
+         ("Reset Interface Size", "win.interface-reset")],
         [("Next Document", "win.next-document"), ("Previous Document", "win.previous-document")],
         [("Fullscreen", "win.fullscreen")],
     ]),
@@ -1206,6 +1408,8 @@ ACCELS = {
     "win.sidebar": ["<Control>backslash"], "win.preview": ["<Control>e"], "win.split": ["<Control><Shift>e"],
     "win.zoom-in": ["<Control>equal", "<Control>plus"], "win.zoom-out": ["<Control>minus"],
     "win.zoom-reset": ["<Control>0"],
+    "win.interface-bigger": ["<Control><Alt>equal", "<Control><Alt>plus"],
+    "win.interface-smaller": ["<Control><Alt>minus"], "win.interface-reset": ["<Control><Alt>0"],
     "win.next-document": ["<Control>Tab", "<Control>Page_Down"],
     "win.previous-document": ["<Control><Shift>Tab", "<Control>Page_Up", "<Control><Shift>ISO_Left_Tab"],
     "win.fullscreen": ["F11"], "win.shortcuts": ["<Control>question", "<Control>slash"],
@@ -1250,6 +1454,7 @@ class WriterWindow(Gtk.ApplicationWindow):
         self.documents = []
         self.current = None
         self.font_size = float(state.get("font_size") or settings.get("font_size", 14))
+        self.ui_scale = float(settings.get("ui_scale", 1.0))
         self.search_open = False
         self.search_matches = []
         self.search_index = -1
@@ -1403,6 +1608,8 @@ class WriterWindow(Gtk.ApplicationWindow):
             "sidebar": self.toggle_sidebar, "preview": lambda: self.set_mode("edit" if self.mode == "preview" else "preview"),
             "split": lambda: self.set_mode("edit" if self.mode == "split" else "split"),
             "zoom-in": lambda: self.zoom(1), "zoom-out": lambda: self.zoom(-1), "zoom-reset": lambda: self.zoom(0),
+            "interface-bigger": lambda: self.scale_interface(1), "interface-smaller": lambda: self.scale_interface(-1),
+            "interface-reset": lambda: self.scale_interface(0),
             "next-document": lambda: self.cycle_document(1), "previous-document": lambda: self.cycle_document(-1),
             "fullscreen": lambda: self.unfullscreen() if self.is_fullscreen() else self.fullscreen(),
             "shortcuts": self.show_shortcuts, "about": self.show_about,
@@ -1429,7 +1636,8 @@ class WriterWindow(Gtk.ApplicationWindow):
     def _apply_theme(self):
         p = self.palette
         bg, fg, accent = p["background"], p["foreground"], p["accent"]
-        self.css.load_from_string(theme_css(p, self.font_size))
+        self.css.load_from_string(theme_css(p, self.font_size, self.ui_scale))
+        self.sidebar.set_size_request(round(240 * self.ui_scale), -1)
         marker = mix(bg, fg, 0.38)
         self.tag_table.lookup("marker").set_property("foreground", marker)
         self.tag_table.lookup("quote").set_property("foreground", mix(bg, fg, 0.7))
@@ -1455,6 +1663,13 @@ class WriterWindow(Gtk.ApplicationWindow):
         self._apply_theme()
         update_settings(font_size=self.font_size)
         self.save_session_soon()
+
+    def scale_interface(self, direction):
+        self.ui_scale = 1.0 if direction == 0 else round(max(0.8, min(2.0, self.ui_scale + direction * 0.1)), 1)
+        self._apply_theme()
+        update_settings(ui_scale=self.ui_scale)
+        if self.current:
+            self.current.set_status(f"Interface size {round(self.ui_scale * 100)}%")
 
     # ----- helpers -----
 
@@ -2117,16 +2332,18 @@ class WriterWindow(Gtk.ApplicationWindow):
         except (ImportError, ValueError):
             self.current.set_status("Printing needs python3-cairo")
             return
-        markup = markdown_to_pango(self.text()) if is_markdown(self.current.path) else escape_markup(self.text())
+        text, markdown = self.text(), is_markdown(self.current.path)
         state = {}
         operation = Gtk.PrintOperation(job_name=self.current.name())
 
         def begin(operation, context):
             layout = context.create_pango_layout()
             layout.set_font_description(Pango.FontDescription.from_string(f"{FONT_FAMILY} 10"))
+            layout.set_text("0" * 50, -1)
+            columns = int(context.get_width() * Pango.SCALE / (layout.get_size()[0] / 50)) - 1
             layout.set_width(int(context.get_width() * Pango.SCALE))
             layout.set_wrap(Pango.WrapMode.WORD_CHAR)
-            layout.set_markup(markup, -1)
+            layout.set_markup(markdown_to_pango(text, columns) if markdown else escape_markup(text), -1)
             page_height = context.get_height() * Pango.SCALE
             pages, top, lines = [], 0, layout.get_iter()
             while True:
