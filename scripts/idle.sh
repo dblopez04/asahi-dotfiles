@@ -6,6 +6,14 @@
 # While ~/.cache/stay-awake exists nothing locks, blanks or suspends (the settings panel's
 # "stay awake" switch).
 
+# remember the timers, so `idle.sh` without arguments (stay-awake.sh) restarts with the same ones
+timers=${XDG_CACHE_HOME:-$HOME/.cache}/idle-timers
+if [ $# -ge 3 ]; then
+    echo "$1 $2 $3" > "$timers"
+else
+    set -- $(cat "$timers" 2>/dev/null)
+fi
+
 lock=${1:-300}
 screen=${2:-330}
 suspend=${3:-1800}

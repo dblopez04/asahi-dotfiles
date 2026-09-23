@@ -9,6 +9,7 @@ LOCK = NEVER + [(60, "1 minute"), (120, "2 minutes"), (300, "5 minutes"), (600, 
 SCREEN = NEVER + [(15, "15 seconds after locking"), (30, "30 seconds after locking"), (60, "1 minute after locking"),
                   (300, "5 minutes after locking")]
 SUSPEND = NEVER + [(600, "10 minutes"), (1200, "20 minutes"), (1800, "30 minutes"), (3600, "1 hour"), (7200, "2 hours")]
+LID = [("sleep", "sleep"), ("lock", "lock and turn the screen off"), ("nothing", "just turn the screen off")]
 
 
 class IdlePage(Page):
@@ -24,6 +25,11 @@ class IdlePage(Page):
         self.screen = Choice(SCREEN, lambda v: self.set_timers(screen=v))
         self.suspend = Choice(SUSPEND, lambda v: self.set_timers(suspend=v))
         self.add(row("lock the screen", self.lock), row("turn the display off", self.screen), row("sleep", self.suspend))
+
+        self.section("lid")
+        self.lid = Choice(LID, lambda v: self.stage(f"set $lid_action {v}"))
+        self.add(row("when the lid closes", self.lid,
+                     sub=label("with an external display, only the laptop screen turns off", "dim")))
 
         self.section("now")
         self.add(row("lock", button("lock screen", lambda: spawn("swaylock", "-f"))),
@@ -42,6 +48,7 @@ class IdlePage(Page):
         relative = screen - lock if lock and screen else screen
         self.screen.set_value(min((v for v, _t in SCREEN), key=lambda v: abs(v - relative)) if screen else 0)
         self.suspend.set_value(suspend)
+        self.lid.set_value(self.sway("set $lid_action", "sleep"))
 
     def set_timers(self, lock=None, screen=None, suspend=None):
         current_lock, current_screen, current_suspend = self.values()
@@ -54,12 +61,5 @@ class IdlePage(Page):
         self.stage(f"set $idle_lock {lock}", f"set $idle_screen_off {absolute}", f"set $idle_suspend {suspend}")
 
     def set_stay_awake(self, on):
-        if on:
-            open(STAY_AWAKE, "a").close()
-        else:
-            try:
-                os.remove(STAY_AWAKE)
-            except FileNotFoundError:
-                pass
-        lock, screen, suspend = self.values()
-        spawn(os.path.join(HOME, ".local/bin/idle.sh"), str(lock), str(screen), str(suspend))
+        # the same switch as the bar icon and Spotlight's "stay awake"
+        spawn(os.path.join(HOME, ".local/bin/stay-awake.sh"), "on" if on else "off")

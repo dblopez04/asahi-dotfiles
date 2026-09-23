@@ -40,6 +40,8 @@ exec swaync
 exec swayosd-server
 # split new windows along the focused window's longer side (1 | top/bottom instead of 1 | 1 | 1)
 exec ~/.local/bin/autotiling
+# sway decides what closing the lid does (lid.sh), not logind
+exec ~/.local/bin/lid.sh inhibit
 # the battery charge limit from the settings panel (it resets on boot)
 exec sh -c 'f=~/.local/state/battery-limit; [ -f "$f" ] && for t in /sys/class/power_supply/*/charge_control_end_threshold; do cat "$f" > "$t"; done'
 
@@ -48,6 +50,8 @@ exec sh -c 'f=~/.local/state/battery-limit; [ -f "$f" ] && for t in /sys/class/p
 set $idle_lock 300
 set $idle_screen_off 330
 set $idle_suspend 1800
+# closing the lid: sleep, lock, or nothing (lid.sh; set in Settings > lock & sleep)
+set $lid_action sleep
 
 #####################
 ### LOOK AND FEEL ###
@@ -224,3 +228,5 @@ include /etc/sway/config.d/*
 include ~/.config/sway/settings.conf
 
 exec_always ~/.local/bin/idle.sh $idle_lock $idle_screen_off $idle_suspend
+bindswitch --reload --locked lid:on exec ~/.local/bin/lid.sh close $lid_action
+bindswitch --reload --locked lid:off exec ~/.local/bin/lid.sh open
