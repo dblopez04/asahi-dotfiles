@@ -43,6 +43,8 @@ exec swayosd-server
 exec ~/.local/bin/autotiling
 # sway decides what closing the lid does (lid.sh), not logind
 exec ~/.local/bin/lid.sh inhibit
+# clipboard history (Super+Ctrl+V)
+exec ~/.local/bin/clipboard-history.py watch
 # the battery charge limit from the settings panel (it resets on boot)
 exec sh -c 'f=~/.local/state/battery-limit; [ -f "$f" ] && for t in /sys/class/power_supply/*/charge_control_end_threshold; do cat "$f" > "$t"; done'
 
@@ -114,6 +116,8 @@ bindsym $mod+m exit
 bindsym $mod+e exec $fileManager
 bindsym $mod+Shift+v floating toggle
 bindsym $mod+r exec $menu
+# clipboard history picker
+bindsym $mod+Ctrl+v exec ~/.local/bin/clipboard-history.py pick
 bindsym $mod+n exec swaync-client -t -sw
 # settings popup, like Cmd+, on macOS (press again to close)
 bindsym $mod+comma exec ~/.local/bin/settings-panel.py
