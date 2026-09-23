@@ -120,6 +120,8 @@ bindsym $mod+r exec $menu
 bindsym $mod+Ctrl+v exec ~/.local/bin/clipboard-history.py pick
 # copy the color of any pixel on screen
 bindsym $mod+Shift+p exec ~/.local/bin/color-picker.sh
+# every shortcut, grouped (press any key to close)
+bindsym $mod+slash exec ~/.local/bin/cheatsheet.py
 bindsym $mod+n exec swaync-client -t -sw
 # settings popup, like Cmd+, on macOS (press again to close)
 bindsym $mod+comma exec ~/.local/bin/settings-panel.py
@@ -219,6 +221,7 @@ for_window [class="feh"] floating enable, resize set 80 ppt 80 ppt, move positio
 for_window [app_id="walcalc"] floating enable
 # settings and wallpaper picker: movable windows that stay open until closed
 for_window [app_id="^dev\.dotfiles\.(SettingsPanel|WallpaperPicker)$"] floating enable, move position center
+for_window [app_id="^dev\.dotfiles\.Cheatsheet$"] floating enable, border none, move position center
 
 ###########
 ### BAR ###
