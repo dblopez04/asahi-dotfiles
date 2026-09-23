@@ -5,6 +5,8 @@ import time
 
 from gi.repository import Gtk
 
+import dotconfig
+
 from .common import (HOME, ItemList, Page, SegmentBar, button, human_size, in_background, label, load_theme,
                       spawn)
 
@@ -17,7 +19,7 @@ CATEGORIES = [
     ("media", [os.path.join(HOME, d) for d in ("Pictures", "Videos", "Music", "Screenshots", "wallpapers")], "c3"),
     ("developer", [os.path.join(HOME, d) for d in (".local/share/containers", ".npm", ".cache/pnpm",
                                                    ".local/share/pnpm", ".cargo", ".rustup", ".bun", "go",
-                                                   ".vscode", ".config/Code", "dotfiles")], "c4"),
+                                                   ".vscode", ".config/Code")] + [dotconfig.DOTFILES], "c4"),
     ("caches", [os.path.join(HOME, ".cache"), "/var/cache"], "c5"),
     ("system", ["/var/log", "/var/lib", "/boot"], "c6"),
     ("trash", [os.path.join(HOME, ".local/share/Trash")], "dim"),

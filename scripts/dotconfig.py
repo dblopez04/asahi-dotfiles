@@ -8,7 +8,7 @@ merges them into the matching lines of ~/.config/sway/config, after checking the
 Other files (the waybar config template, for example) are staged as whole new contents under
 ~/.cache/settings-panel/pending and written, with a backup, on save.
 
-Backups live in ~/dotfiles/backups/<path under ~>/<timestamp>, the last 10 per file.
+Backups live in <this repo>/backups/<path under ~>/<timestamp>, the last 10 per file.
 """
 import difflib
 import json

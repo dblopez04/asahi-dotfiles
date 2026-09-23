@@ -5,6 +5,8 @@ import shutil
 
 from gi.repository import Gio, Gtk
 
+import dotconfig
+
 from .common import (HOME, V, Choice, ItemList, Page, Toggle, button, confirm, dialog, human_size, in_background,
                       in_terminal, label, quote, row, run, run_json)
 
@@ -66,7 +68,7 @@ def list_other():
         for name in entries:
             path = os.path.join(folder, name)
             real = os.path.realpath(path)
-            if source == "local" and (real.startswith(os.path.join(HOME, "dotfiles")) or "pipx" in real):
+            if source == "local" and (real.startswith(dotconfig.DOTFILES + os.sep) or "pipx" in real):
                 continue  # these scripts, and pipx's own links
             if os.access(path, os.X_OK) and not os.path.isdir(path):
                 items.append({"source": source, "name": name, "version": "", "summary": real if real != path else "",

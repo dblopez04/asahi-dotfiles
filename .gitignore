@@ -18,3 +18,12 @@ backups/
 
 # Local Claude Code settings (also in the global git ignore on this machine)
 .claude/settings.local.json
+
+# Made per machine by scripts/install.sh: links to pywal's generated files in ~/.cache/wal
+# (git would store their absolute paths), and GTK's bookmarks, which hold absolute paths too
+.config/swaylock/config
+.config/swaync/style.css
+.config/swayosd/colors.css
+.config/waybar/colors.css
+.config/waybar/config.jsonc
+.config/gtk-3.0/bookmarks

@@ -36,10 +36,10 @@ setopt INC_APPEND_HISTORY
 
 # ---------- Environment ----------
 export MANPAGER='nvim +Man!'
-export PATH=/home/daniel/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/home/daniel/.local/share/flatpak/exports/bin:/usr/bin/site_perl:/usr/bin/vendor_perl:/usr/bin/core_perl
+export PATH="$HOME/.local/bin:$HOME/.local/share/flatpak/exports/bin:$PATH"
 
 # pnpm
-export PNPM_HOME="/home/daniel/.local/share/pnpm"
+export PNPM_HOME="$HOME/.local/share/pnpm"
 case ":$PATH:" in
   *":$PNPM_HOME:"*) ;;
   *) export PATH="$PNPM_HOME:$PATH" ;;
@@ -48,7 +48,7 @@ esac
 # bun
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
-[ -s "/home/daniel/.bun/_bun" ] && source "/home/daniel/.bun/_bun"
+[ -s "$BUN_INSTALL/_bun" ] && source "$BUN_INSTALL/_bun"
 
 # ---------- Aliases ----------
 alias v='nvim'
@@ -76,4 +76,4 @@ mkcd() { mkdir -p "$1" && cd "$1" }
 [ -f ~/fzfrc ] && source ~/fzfrc
 
 # opencode
-export PATH=/home/daniel/.opencode/bin:$PATH
+export PATH="$HOME/.opencode/bin:$PATH"

@@ -1,7 +1,7 @@
 /* Volume/brightness popup: SwayOSD's default style, recolored by pywal.
    (A full custom stylesheet hid the brightness icon; overriding the default keeps it.) */
 @import url("file:///etc/xdg/swayosd/style.css");
-@import url("file:///home/daniel/.cache/wal/colors-waybar.css");
+@import url("colors.css");
 
 window#osd {
   border-radius: 16px;

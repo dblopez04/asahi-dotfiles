@@ -310,7 +310,7 @@ class Panel(Gtk.ApplicationWindow):
 
     def save_pending(self):
         ok, message = dotconfig.save_all()
-        self.flash(message if not ok else "saved · the old config is in ~/dotfiles/backups")
+        self.flash(message if not ok else f"saved · the old config is in {dotconfig.BACKUPS.replace(os.path.expanduser('~'), '~')}")
         self.update_pending()
         if self.current:
             self.current.refresh()

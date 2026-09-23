@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sets up this sway rice on Fedora Asahi Remix. Safe to re-run.
 #
-# Usage: ~/dotfiles/scripts/install.sh [--no-sudo] [--console-font]
+# Usage: scripts/install.sh [--no-sudo] [--console-font]   (the checkout can live anywhere)
 #   --no-sudo       skip everything that needs sudo (packages, system services and tweaks)
 #   --console-font  use a large console font so the tuigreet login screen is readable
 set -euo pipefail
@@ -23,6 +23,13 @@ done
 export PATH="$HOME/.local/bin:$PATH"
 step() { printf '\n\033[1;32m==>\033[0m %s\n' "$*"; }
 clone() { [ -d "$2" ] || git clone -q --depth 1 "$1" "$2"; }
+# release downloads come in aarch64 (Apple Silicon) and x86_64 builds
+ARCH=$(uname -m)
+case $ARCH in
+    aarch64|arm64) ARCH=aarch64 LAZYGIT_ARCH=arm64 ;;
+    x86_64) LAZYGIT_ARCH=x86_64 ;;
+    *) echo "unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
 github_asset_url() { # repo, exact asset name
     curl -fsSL "https://api.github.com/repos/$1/releases/latest" \
         | jq -r --arg name "$2" '.assets[] | select(.name == $name) | .browser_download_url'
@@ -144,7 +151,7 @@ mkdir -p "$HOME/.local/bin"
 step "Installing lazygit"
 if ! command -v lazygit >/dev/null; then
     url=$(curl -fsSL https://api.github.com/repos/jesseduffield/lazygit/releases/latest \
-        | jq -r '.assets[].browser_download_url | select(test("linux_arm64\\.tar\\.gz$"))')
+        | jq -r '.assets[].browser_download_url | select(test("linux_'"$LAZYGIT_ARCH"'\\.tar\\.gz$"))')
     curl -fsSL "$url" | tar -xz -C "$HOME/.local/bin" lazygit
 fi
 
@@ -156,8 +163,8 @@ fi
 step "Installing OpenAI Codex"
 if ! command -v codex >/dev/null; then
     tmp=$(mktemp -d)
-    curl -fsSL "$(github_asset_url openai/codex codex-aarch64-unknown-linux-musl.tar.gz)" | tar -xz -C "$tmp"
-    install -m 755 "$tmp/codex-aarch64-unknown-linux-musl" "$HOME/.local/bin/codex"
+    curl -fsSL "$(github_asset_url openai/codex "codex-$ARCH-unknown-linux-musl.tar.gz")" | tar -xz -C "$tmp"
+    install -m 755 "$tmp/codex-$ARCH-unknown-linux-musl" "$HOME/.local/bin/codex"
     rm -rf "$tmp"
 fi
 
@@ -174,7 +181,21 @@ mkdir -p "$HOME/.config" "$HOME/.local/share" "$HOME/.local/share/applications" 
 # the settings panel's unsaved sway changes (git-ignored); sway's config includes it
 settings_conf="$DOTFILES/.config/sway/settings.conf"
 [ -e "$settings_conf" ] || printf '# Unsaved changes from the settings panel.\n' > "$settings_conf"
-(cd "$DOTFILES" && stow --restow .)
+# these configs are pywal's generated files; the links are made here (and git-ignored) because git
+# would store the absolute path of whoever made them. Dangling until colors are generated below.
+wal_link() { mkdir -p "$(dirname "$DOTFILES/$2")"; ln -sfn "$HOME/.cache/wal/$1" "$DOTFILES/$2"; }
+wal_link swaylock-config .config/swaylock/config
+wal_link swaync-style.css .config/swaync/style.css
+wal_link colors-waybar.css .config/waybar/colors.css
+wal_link waybar-config.jsonc .config/waybar/config.jsonc
+wal_link colors-waybar.css .config/swayosd/colors.css
+(cd "$DOTFILES" && stow --target="$HOME" --restow .)
+# file manager sidebar bookmarks (GTK needs absolute paths, so they're written here)
+mkdir -p "$HOME/Projects"
+for dir in Downloads Projects; do
+    line="file://$HOME/$dir $dir"
+    grep -qxF "$line" "$HOME/.config/gtk-3.0/bookmarks" 2>/dev/null || echo "$line" >> "$HOME/.config/gtk-3.0/bookmarks"
+done
 # GIO only learns an entry's MimeType from this cache, so without it walwrite can't be picked as the text editor
 command -v update-desktop-database >/dev/null && update-desktop-database "$HOME/.local/share/applications"
 
@@ -280,5 +301,5 @@ Next:
   - connect to your tailnet: sudo tailscale up
   - add the Pywalfox extension in Firefox, then run: pywalfox update
   - change the wallpaper and theme with Super+P, everything else with Super+,
-    (settings changes stay unsaved until you save them there; old configs go to ~/dotfiles/backups)
+    (settings changes stay unsaved until you save them there; old configs go to backups/ in this repo)
 EOF
