@@ -32,3 +32,34 @@
 .notification-row .notification-background .notification .notification-default-action .notification-content .text-box .summary {{
   color: {color2};
 }}
+
+/* control center widgets: square, flat, in the palette */
+.control-center .widget-buttons-grid {{ padding: 6px 8px; margin: 0; background: none; }}
+.control-center .widget-buttons-grid flowboxchild button {{
+  background: var(--noti-bg-darker); color: var(--text-color); border: 1px solid var(--noti-border-color);
+  border-radius: 0; padding: 8px 10px; margin: 2px; box-shadow: none; font-size: 13px;
+}}
+.control-center .widget-buttons-grid flowboxchild button:hover {{ background: var(--noti-bg-hover); }}
+.control-center .widget-buttons-grid flowboxchild button:checked,
+.control-center .widget-buttons-grid flowboxchild button.active,
+.control-center .widget-buttons-grid flowboxchild button:checked label {{
+  background: var(--bg-selected); color: var(--cc-bg); border-color: var(--bg-selected);
+}}
+.control-center .widget-buttons-grid flowboxchild button label {{ font-size: 13px; }}
+.control-center .widget-slider, .control-center .widget-backlight {{
+  background: none; padding: 2px 14px; margin: 0; border-radius: 0;
+}}
+.control-center .widget-slider label, .control-center .widget-backlight label {{
+  font-family: "BlexMono Nerd Font Propo", monospace; font-size: 15px; min-width: 22px; color: var(--text-color);
+}}
+.control-center scale trough {{ background: var(--noti-bg-darker); border-radius: 0; min-height: 4px; }}
+.control-center scale highlight {{ background: var(--bg-selected); border-radius: 0; }}
+.control-center scale slider {{ background: var(--text-color); border-radius: 0; min-width: 10px; min-height: 10px; box-shadow: none; }}
+.control-center .widget-mpris {{ padding: 6px 8px; margin: 0; }}
+.control-center .widget-mpris > box > carousel > widget > .widget-mpris-player {{
+  background: var(--noti-bg-darker); border: 1px solid var(--noti-border-color); border-radius: 0; box-shadow: none;
+}}
+.control-center .widget-mpris .widget-mpris-album-art {{ border-radius: 0; box-shadow: none; }}
+.control-center .widget-mpris button {{ border-radius: 0; }}
+.control-center .widget-title {{ margin: 8px 14px 2px 14px; font-size: 13px; }}
+.control-center .widget-title > button {{ border-radius: 0; font-size: 12px; }}

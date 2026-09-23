@@ -1,0 +1,140 @@
+{
+  "$schema": "/etc/xdg/swaync/configSchema.json",
+  "ignore-gtk-theme": true,
+  "positionX": "right",
+  "positionY": "top",
+  "layer": "overlay",
+  "control-center-layer": "top",
+  "layer-shell": true,
+  "layer-shell-cover-screen": true,
+  "cssPriority": "user",
+  "control-center-margin-top": 8,
+  "control-center-margin-bottom": 8,
+  "control-center-margin-right": 8,
+  "control-center-margin-left": 0,
+  "notification-2fa-action": true,
+  "notification-inline-replies": false,
+  "notification-body-image-height": 100,
+  "notification-body-image-width": 200,
+  "timeout": 10,
+  "timeout-low": 5,
+  "timeout-critical": 0,
+  "fit-to-screen": true,
+  "relative-timestamps": true,
+  "control-center-width": 440,
+  "notification-window-width": 440,
+  "keyboard-shortcuts": true,
+  "notification-grouping": true,
+  "image-visibility": "when-available",
+  "transition-time": 200,
+  "hide-on-clear": false,
+  "hide-on-action": true,
+  "text-empty": "no notifications",
+  "script-fail-notify": true,
+  "widgets": [
+    "buttons-grid#toggles",
+    "buttons-grid#actions",
+    "slider#volume",
+    "backlight",
+    "backlight#keyboard",
+    "mpris",
+    "title",
+    "notifications"
+  ],
+  "widget-config": {
+    "buttons-grid#toggles": {
+      "buttons-per-row": 2,
+      "actions": [
+        {
+          "label": "  wi-fi",
+          "type": "toggle",
+          "command": "~/.local/bin/control-center.sh set wifi",
+          "update-command": "~/.local/bin/control-center.sh state wifi"
+        },
+        {
+          "label": "  bluetooth",
+          "type": "toggle",
+          "command": "~/.local/bin/control-center.sh set bluetooth",
+          "update-command": "~/.local/bin/control-center.sh state bluetooth"
+        },
+        {
+          "label": "  do not disturb",
+          "type": "toggle",
+          "command": "~/.local/bin/control-center.sh set dnd",
+          "update-command": "~/.local/bin/control-center.sh state dnd"
+        },
+        {
+          "label": "  stay awake",
+          "type": "toggle",
+          "command": "~/.local/bin/control-center.sh set stay-awake",
+          "update-command": "~/.local/bin/control-center.sh state stay-awake"
+        },
+        {
+          "label": "  tailscale",
+          "type": "toggle",
+          "command": "~/.local/bin/control-center.sh set tailscale",
+          "update-command": "~/.local/bin/control-center.sh state tailscale"
+        }
+      ]
+    },
+    "buttons-grid#actions": {
+      "buttons-per-row": 5,
+      "actions": [
+        {
+          "label": "",
+          "command": "swaync-client -cp; sleep 0.25; ~/.local/bin/screenshot.sh area"
+        },
+        {
+          "label": "",
+          "command": "swaync-client -cp; sleep 0.25; ~/.local/bin/color-picker.sh"
+        },
+        {
+          "label": "",
+          "command": "swaync-client -cp; sleep 0.25; ~/.local/bin/clipboard-history.py pick"
+        },
+        {
+          "label": "",
+          "command": "swaync-client -cp; sleep 0.25; ~/.local/bin/settings-panel.py"
+        },
+        {
+          "label": "",
+          "command": "swaync-client -cp; sleep 0.25; swaylock -f"
+        }
+      ]
+    },
+    "slider#volume": {
+      "label": "",
+      "cmd_getter": "~/.local/bin/control-center.sh volume",
+      "cmd_setter": "~/.local/bin/control-center.sh volume $value",
+      "min": 0,
+      "max": 100,
+      "min_limit": 0,
+      "max_limit": 100
+    },
+    "backlight": {
+      "label": "",
+      "device": "apple-panel-bl",
+      "subsystem": "backlight",
+      "min": 1
+    },
+    "backlight#keyboard": {
+      "label": "",
+      "device": "kbd_backlight",
+      "subsystem": "leds"
+    },
+    "mpris": {
+      "autohide": true,
+      "show-album-art": "when-available",
+      "loop-carousel": false,
+      "blacklist": []
+    },
+    "title": {
+      "text": "notifications",
+      "clear-all-button": true,
+      "button-text": "clear all"
+    },
+    "notifications": {
+      "vexpand": true
+    }
+  }
+}
