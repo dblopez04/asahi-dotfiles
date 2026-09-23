@@ -92,6 +92,15 @@ gpgkey=https://packages.microsoft.com/keys/microsoft.asc'
     sudo systemctl enable --now tailscaled
     # lets the settings panel change tailscale settings without sudo
     sudo tailscale set --operator="$USER" || true
+
+    step "Letting the settings panel set the battery charge limit"
+    rule='SUBSYSTEM=="power_supply", ATTR{type}=="Battery", RUN+="/bin/sh -c '"'"'cd /sys%p && chgrp wheel charge_control_*_threshold && chmod g+w charge_control_*_threshold'"'"'"'
+    conf=/etc/udev/rules.d/90-battery-charge-limit.rules
+    if [ "$(cat "$conf" 2>/dev/null)" != "$rule" ]; then
+        printf '%s\n' "$rule" | sudo tee "$conf" >/dev/null
+        sudo udevadm control --reload
+        sudo udevadm trigger --subsystem-match=power_supply
+    fi
 fi
 
 step "Installing BlexMono Nerd Font"

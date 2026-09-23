@@ -40,6 +40,8 @@ exec swaync
 exec swayosd-server
 # split new windows along the focused window's longer side (1 | top/bottom instead of 1 | 1 | 1)
 exec ~/.local/bin/autotiling
+# the battery charge limit from the settings panel (it resets on boot)
+exec sh -c 'f=~/.local/state/battery-limit; [ -f "$f" ] && for t in /sys/class/power_supply/*/charge_control_end_threshold; do cat "$f" > "$t"; done'
 
 # seconds idle before locking, turning the screen off, and suspending (0 = never).
 # idle.sh starts swayidle with these at the end of this file, after settings.conf can change them.

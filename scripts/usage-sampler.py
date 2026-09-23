@@ -12,6 +12,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 
 STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "usage")
@@ -88,6 +89,38 @@ def app_name(name):
     return lowered
 
 
+WARNINGS = [(20, "normal"), (10, "critical"), (5, "critical")]
+warned = set()
+
+
+def warn_low_battery(level, charging, seconds_left):
+    """A notification when the battery drops to 20%, 10% and 5%. Plugging in resets them."""
+    if charging:
+        warned.clear()
+        return
+    for threshold, urgency in WARNINGS:
+        if level <= threshold and threshold not in warned:
+            warned.update(t for t, _u in WARNINGS if t >= threshold)  # don't also send the higher ones
+            left = f" · about {seconds_left // 3600}h {seconds_left // 60 % 60}m left" if seconds_left else ""
+            body = f"{level}% remaining{left}" + (" · plug in soon" if threshold <= 10 else "")
+
+            def notify():
+                # -A waits for a click; the action opens the battery page
+                try:
+                    chosen = subprocess.run(
+                        ["notify-send", "-a", "battery", "-u", urgency, "-i", "battery-caution",
+                         "-A", "settings=battery settings", "Low battery", body],
+                        capture_output=True, text=True, timeout=3600).stdout.strip()
+                except (OSError, subprocess.SubprocessError):
+                    return
+                if chosen == "settings":
+                    subprocess.Popen([os.path.expanduser("~/.local/bin/settings-panel.py"), "battery"],
+                                     start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            threading.Thread(target=notify, daemon=True).start()
+            break
+
+
 def main():
     os.makedirs(STATE, exist_ok=True)
     battery = battery_path()
@@ -113,8 +146,10 @@ def main():
         if battery:
             status = read(f"{battery}/status").lower()
             power = int(read(f"{battery}/power_now", "0") or 0) / 1e6
-            sample.update(level=int(read(f"{battery}/capacity", "0") or 0), watts=round(power, 2),
-                          charging=status in ("charging", "full"))
+            level = int(read(f"{battery}/capacity", "0") or 0)
+            charging = status in ("charging", "full", "not charging")
+            sample.update(level=level, watts=round(power, 2), charging=charging)
+            warn_low_battery(level, charging, int(read(f"{battery}/time_to_empty_now", "0") or 0))
         path = os.path.join(STATE, time.strftime("%Y-%m-%d") + ".jsonl")
         try:
             with open(path, "a") as f:

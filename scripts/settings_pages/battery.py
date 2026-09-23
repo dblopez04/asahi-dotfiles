@@ -8,10 +8,15 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib, Gtk  # noqa: E402
 
-from .common import (Chart, ItemList, Page, button, duration, in_background, label, load_theme, read, row,
-                      value_row)
+from .common import (Chart, Choice, ItemList, Page, button, duration, in_background, label, load_theme, read, row,
+                      run_ok, value_row)
 
-USAGE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "usage")
+STATE = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+USAGE = os.path.join(STATE, "usage")
+# restored at login by the sway config, since the limit resets on boot
+SAVED_LIMIT = os.path.join(STATE, "battery-limit")
+LIMITS = [(100, "off (charge to 100%)"), (90, "90%"), (80, "80%"), (70, "70%"), (60, "60%"), (50, "50%")]
+LIMIT_NOTE = "stops charging here to slow battery wear"
 UPOWER_DEVICE = "/org/freedesktop/UPower/devices/battery_macsmc_battery"
 
 
@@ -92,9 +97,12 @@ class BatteryPage(Page):
         self.add(self.sampler_row)
 
         self.section("health")
-        for key in ("capacity", "cycles", "charge limit"):
+        for key in ("capacity", "cycles"):
             line, self.values[key] = value_row(key)
             self.add(line)
+        self.limit = Choice(LIMITS, self.set_limit)
+        self.limit_note = label(LIMIT_NOTE, "dim", wrap=True)
+        self.add(row("charge limit", self.limit, sub=self.limit_note))
 
     def shown(self):
         if self.path:
@@ -123,7 +131,8 @@ class BatteryPage(Page):
         self.values["capacity"].set_label(f"{full * 100 // design}% of new" if design else "-")
         self.values["cycles"].set_label(value("cycle_count") or "-")
         limit = value("charge_control_end_threshold")
-        self.values["charge limit"].set_label(f"{limit}%" if limit else "-")
+        self.limit.set_sensitive(bool(limit))
+        self.limit.set_value(int(limit) if limit else None)
         active = os.system("systemctl --user --quiet is-active usage-sampler.service") == 0
         self.sampler_row.set_visible(not active)
 
@@ -196,6 +205,39 @@ class BatteryPage(Page):
         total = sum(app_energy.values()) or 1
         top = sorted(app_energy.items(), key=lambda kv: -kv[1])[:8]
         self.apps.set_items((app, app, f"{energy / total * 100:.0f}%  ·  {energy:.1f} wh", False) for app, energy in top)
+
+    def set_limit(self, percent):
+        path = f"{self.path}/charge_control_end_threshold"
+        self.limit_note.set_label("setting...")
+
+        def work():
+            try:
+                with open(path, "w") as f:
+                    f.write(str(percent))
+                ok, output = True, ""
+            except PermissionError:  # install.sh's udev rule makes it writable; until then ask polkit
+                ok, output = run_ok("pkexec", "tee", path, input=str(percent), timeout=120)
+            except OSError as e:
+                ok, output = False, str(e)
+            if ok:
+                os.makedirs(STATE, exist_ok=True)
+                with open(SAVED_LIMIT, "w") as f:
+                    f.write(f"{percent}\n")
+            return ok, output
+
+        def done(result):
+            ok, output = result
+            actual = read(path)
+            if not ok:
+                note = f"couldn't change it: {output or 'permission denied'}"
+            elif actual and int(actual) != percent:
+                note = f"this firmware only supports {actual}%"  # older firmware: just 80% or off
+            else:
+                note = LIMIT_NOTE
+            self.limit_note.set_label(note)
+            self.refresh()
+
+        in_background(work, done)
 
     def start_sampler(self):
         os.system("systemctl --user daemon-reload; systemctl --user enable --now usage-sampler.service")
