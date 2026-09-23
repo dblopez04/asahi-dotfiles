@@ -118,6 +118,8 @@ bindsym $mod+Shift+v floating toggle
 bindsym $mod+r exec $menu
 # clipboard history picker
 bindsym $mod+Ctrl+v exec ~/.local/bin/clipboard-history.py pick
+# copy the color of any pixel on screen
+bindsym $mod+Shift+p exec ~/.local/bin/color-picker.sh
 bindsym $mod+n exec swaync-client -t -sw
 # settings popup, like Cmd+, on macOS (press again to close)
 bindsym $mod+comma exec ~/.local/bin/settings-panel.py
