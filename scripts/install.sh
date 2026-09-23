@@ -38,6 +38,8 @@ PACKAGES=(
     plocate poppler-utils google-noto-color-emoji-fonts
     # screenshot markup
     swappy
+    # nmtui, for network setups the wi-fi menus don't cover (certificates, other EAP methods, static IPs)
+    NetworkManager-tui
     # apps
     kitty nautilus firefox code neovim vim-enhanced feh mpv libreoffice flatpak
     # shell and terminal tools
