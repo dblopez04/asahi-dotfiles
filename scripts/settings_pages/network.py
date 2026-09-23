@@ -45,11 +45,16 @@ class WifiPage(Page):
         self.networks = ItemList(self.pick, empty="no networks found")
         self.password_label = label("", "title", ellipsize=True)
         self.hidden_ssid = Gtk.Entry(placeholder_text="network name", hexpand=True, visible=False)
+        # for enterprise (802.1X) networks like eduroam
+        self.username = Gtk.Entry(placeholder_text="username", hexpand=True, visible=False)
         self.password = Gtk.PasswordEntry(show_peek_icon=True, hexpand=True, placeholder_text="password")
         self.password.connect("activate", lambda _: self.submit_password())
-        self.hidden_ssid.connect("activate", lambda _: self.password.grab_focus())
+        self.username.connect("activate", lambda _: self.password.grab_focus())
+        self.hidden_ssid.connect("activate", lambda _: (self.username if self.username.get_visible()
+                                                        else self.password).grab_focus())
         self.password_row = Gtk.Box(spacing=12, css_classes=["row"], visible=False)
-        for widget in (self.password_label, self.hidden_ssid, self.password, button("join", self.submit_password)):
+        for widget in (self.password_label, self.hidden_ssid, self.username, self.password,
+                       button("join", self.submit_password)):
             self.password_row.append(widget)
         self.status = label("", "dim", "row", ellipsize=True)
         self.add(self.networks, self.password_row, self.status)
@@ -188,9 +193,13 @@ class WifiPage(Page):
         self.password_label.set_visible(not hidden)
         self.hidden_ssid.set_visible(hidden)
         self.hidden_ssid.set_text("")
+        # a hidden network's security isn't known, so the username is optional there
+        self.username.set_visible(hidden or "802.1X" in self.security.get(ssid, ""))
+        self.username.set_placeholder_text("username (if it needs one)" if hidden else "username")
+        self.username.set_text("")
         self.password.set_text("")
         self.password_row.set_visible(True)
-        (self.hidden_ssid if hidden else self.password).grab_focus()
+        (self.hidden_ssid if hidden else self.username if self.username.get_visible() else self.password).grab_focus()
 
     def show_hidden(self):
         self.ask_password(None, hidden=True)
@@ -198,24 +207,40 @@ class WifiPage(Page):
     def submit_password(self):
         hidden = self.hidden_ssid.get_visible()
         ssid = self.hidden_ssid.get_text().strip() if hidden else self.pending_ssid
+        username = self.username.get_text().strip() if self.username.get_visible() else ""
         if ssid:
-            self.connect_to(ssid, self.password.get_text() or None, hidden=hidden)
+            self.connect_to(ssid, self.password.get_text() or None, hidden=hidden, username=username or None)
 
-    def connect_to(self, ssid, password=None, hidden=False):
+    def connect_to(self, ssid, password=None, hidden=False, username=None):
         self.hide_password()
         self.status.set_label(f"connecting to {ssid}...")
         self.busy = True
         saved = self.saved.get(ssid)
+        device = self.device
 
         def work():
-            if password is None and saved and not hidden:
+            if password is None and username is None and saved and not hidden:
                 return run_ok("nmcli", "con", "up", "id", saved[0], timeout=60)
-            cmd = ["nmcli", "dev", "wifi", "connect", ssid]
-            if password:
-                cmd += ["password", password]
-            if hidden:
-                cmd += ["hidden", "yes"]
-            ok, message = run_ok(*cmd, timeout=60)
+            if username:
+                # enterprise: PEAP with MSCHAPv2, what eduroam and most work/school networks use
+                # (other EAP setups, like certificates or TTLS, can be made in nmtui)
+                cmd = ["nmcli", "con", "add", "type", "wifi", "con-name", ssid, "ssid", ssid,
+                       "wifi-sec.key-mgmt", "wpa-eap", "802-1x.eap", "peap", "802-1x.phase2-auth", "mschapv2",
+                       "802-1x.identity", username, "802-1x.password", password or ""]
+                if device:
+                    cmd += ["ifname", device]
+                if hidden:
+                    cmd += ["802-11-wireless.hidden", "yes"]
+                ok, message = run_ok(*cmd)
+                if ok:
+                    ok, message = run_ok("nmcli", "con", "up", "id", ssid, timeout=60)
+            else:
+                cmd = ["nmcli", "dev", "wifi", "connect", ssid]
+                if password:
+                    cmd += ["password", password]
+                if hidden:
+                    cmd += ["hidden", "yes"]
+                ok, message = run_ok(*cmd, timeout=60)
             if not ok and not saved:
                 run("nmcli", "con", "delete", "id", ssid)  # don't keep a profile with a wrong password
             return ok, message

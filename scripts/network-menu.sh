@@ -63,6 +63,21 @@ while true; do
             ssid=${action#connect:}
             if nmcli -g NAME connection show | grep -qxF "$ssid"; then
                 run nmcli connection up id "$ssid" && notify "connected to $ssid"
+            elif [[ ${security[$ssid]} == *802.1X* ]]; then
+                # enterprise (eduroam, work, school): a username and password, sent with PEAP/MSCHAPv2.
+                # other EAP setups (certificates, TTLS) can be made in nmtui
+                user=$(fuzzel --dmenu --prompt-only "username > ")
+                [ -n "$user" ] || continue
+                pass=$(fuzzel --dmenu --prompt-only "password > " --password)
+                [ -n "$pass" ] || continue
+                if run nmcli connection add type wifi ifname "$dev" con-name "$ssid" ssid "$ssid" \
+                        wifi-sec.key-mgmt wpa-eap 802-1x.eap peap 802-1x.phase2-auth mschapv2 \
+                        802-1x.identity "$user" 802-1x.password "$pass" \
+                    && run nmcli connection up id "$ssid"; then
+                    notify "connected to $ssid"
+                else
+                    nmcli connection delete id "$ssid" >/dev/null 2>&1
+                fi
             else
                 args=()
                 if [ -n "${security[$ssid]}" ]; then
