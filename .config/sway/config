@@ -118,6 +118,8 @@ bindsym $mod+m exit
 bindsym $mod+e exec $fileManager
 bindsym $mod+Shift+v floating toggle
 bindsym $mod+r exec $menu
+# Spotlight: apps, files, settings, commands, math (press again to close)
+bindsym $mod+space exec ~/.local/bin/spotlight.py
 # clipboard history picker
 bindsym $mod+Ctrl+v exec ~/.local/bin/clipboard-history.py pick
 # copy the color of any pixel on screen
@@ -223,7 +225,9 @@ for_window [class="feh"] floating enable, resize set 80 ppt 80 ppt, move positio
 for_window [app_id="walcalc"] floating enable
 # settings and wallpaper picker: movable windows that stay open until closed
 for_window [app_id="^dev\.dotfiles\.(SettingsPanel|WallpaperPicker)$"] floating enable, move position center
+for_window [app_id="^dev\.dotfiles\.QuickLook$"] floating enable, move position center
 for_window [app_id="^dev\.dotfiles\.Cheatsheet$"] floating enable, border none, move position center
+for_window [app_id="^dev\.dotfiles\.Spotlight$"] floating enable, border none, move position center, move up 180 px
 
 ###########
 ### BAR ###
