@@ -44,6 +44,8 @@ PACKAGES=(
     kitty nautilus firefox code neovim vim-enhanced feh mpv libreoffice flatpak
     # shell and terminal tools
     zsh fzf eza zoxide fastfetch tmux ripgrep fd-find bat btop tree powertop
+    # building librepods (AirPods battery, noise control and ear detection)
+    cargo rust pkgconf-pkg-config dbus-devel pulseaudio-libs-devel
     # development
     gcc gcc-c++ make cmake gdb valgrind clang git-delta podman podman-compose
     postgresql-server postgresql postgresql-contrib
@@ -167,6 +169,16 @@ if [ ! -x "$HOME/.opencode/bin/opencode" ]; then
     curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path
 fi
 ln -sfn "$HOME/.opencode/bin/opencode" "$HOME/.local/bin/opencode"
+
+step "Building LibrePods"
+# the Rust rewrite lives on its own branch; the launcher entry is stowed from .local/share/applications
+if [ ! -x "$HOME/.local/bin/librepods" ]; then
+    src="$HOME/.local/src/librepods"
+    [ -d "$src" ] || git clone -q --depth 1 -b linux/rust https://github.com/kavishdevar/librepods.git "$src"
+    (cd "$src/linux-rust" && cargo build --release)
+    install -Dm755 "$src/linux-rust/target/release/librepods" "$HOME/.local/bin/librepods"
+    install -Dm644 "$src/linux-rust/assets/icon.png" "$HOME/.local/share/icons/hicolor/256x256/apps/me.kavishdevar.librepods.png"
+fi
 
 step "Linking dotfiles"
 # create parents so stow links individual entries inside them instead of the whole directory

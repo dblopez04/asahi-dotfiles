@@ -10,3 +10,5 @@
 ^/scripts
 # config backups made by the settings panel
 ^/backups
+# Claude Code project settings for this repo
+^/\.claude

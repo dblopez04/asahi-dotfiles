@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=LibrePods
+GenericName=AirPods Manager
+Comment=AirPods battery, noise control and ear detection
+Exec=librepods
+Icon=me.kavishdevar.librepods
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=airpods;headphones;bluetooth;battery;anc;

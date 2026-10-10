@@ -31,6 +31,7 @@ Read the installer and back up your existing configs before you run it. It's saf
 - **User tools:**
   - pywal16 (with the colorz, haishoku and colorthief palette backends), Pywalfox and autotiling through pipx
   - Claude Code, Codex, opencode and lazygit
+  - LibrePods, built from source for AirPods battery, noise control and ear detection, with a launcher entry
   - the Nerd Font and cursors
 - **Links:** links the configs with Stow and every script in `scripts/` into `~/.local/bin`.
 - **Theme:** generates the theme from the default wallpaper, sets up btop's theme, and enables the `usage-sampler` user service.
