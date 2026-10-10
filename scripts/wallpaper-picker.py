@@ -47,8 +47,11 @@ CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.
 BG_LINE = re.compile(r'^(output \* bg )("[^"]*"|\S+)(.*)$', re.M)
 IMAGE_TYPES = (".jpg", ".jpeg", ".png", ".webp")
 
-GALLERY_TREE = "https://api.github.com/repos/dharmx/walls/git/trees/main?recursive=1"
-GALLERY_RAW = "raw.githubusercontent.com/dharmx/walls/main/"
+# the gallery is this github repo; the sidebar credits it with a link
+GALLERY_REPO = "dharmx/walls"
+GALLERY_URL = f"https://github.com/{GALLERY_REPO}"
+GALLERY_TREE = f"https://api.github.com/repos/{GALLERY_REPO}/git/trees/main?recursive=1"
+GALLERY_RAW = f"raw.githubusercontent.com/{GALLERY_REPO}/main/"
 # github has no thumbnails, so previews come resized from the images.weserv.nl proxy
 # (and from the full image if that fails)
 THUMBNAIL_PROXY = "https://wsrv.nl/?url={}&w={}&h={}&fit=cover&output=jpg&q=80"
@@ -132,6 +135,9 @@ list.sidebar row:hover { background: $hover; }
 list.sidebar row:selected { background: $faint; color: $fg; }
 list.sidebar:focus-within row:selected { background: $sel; color: $sel_fg; }
 list.sidebar:focus-within row:selected .dim { color: $sel_fg; }
+.credit { padding: 6px 16px 8px 16px; }
+.credit link { color: $accent; text-decoration: underline; }
+.credit link:hover { color: $fg; }
 
 scrolledwindow, viewport { background: transparent; }
 scrollbar { background: transparent; border: none; }
@@ -406,8 +412,20 @@ class WallpaperBrowser(Gtk.Box):
         self.sidebar = Gtk.ListBox(css_classes=["sidebar"], selection_mode=Gtk.SelectionMode.BROWSE)
         self.sidebar.connect("row-selected", lambda _, row: row and self.show_category(row.get_index()))
         self.sidebar_box = Gtk.Box(visible=False)
-        self.sidebar_box.append(Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, width_request=170,
-                                                   child=self.sidebar))
+        sidebar_column = Gtk.Box(orientation=V, width_request=170)
+        sidebar_column.append(Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True,
+                                                 child=self.sidebar))
+        sidebar_column.append(Gtk.Box(css_classes=["hsep"]))
+        # where the gallery comes from, linked so it's easy to check
+        credit = Gtk.Box(orientation=V, css_classes=["credit"])
+        credit.append(label("wallpapers from", "dim"))
+        repo = label("", ellipsize=True)
+        repo.set_markup(f'<a href="{GLib.markup_escape_text(GALLERY_URL)}">{GALLERY_REPO}</a>')
+        repo.set_tooltip_text(GALLERY_URL)
+        repo.set_focusable(False)  # the keys stay with the categories and grid
+        credit.append(repo)
+        sidebar_column.append(credit)
+        self.sidebar_box.append(sidebar_column)
         self.sidebar_box.append(Gtk.Box(css_classes=["vsep"]))
         body.append(self.sidebar_box)
 

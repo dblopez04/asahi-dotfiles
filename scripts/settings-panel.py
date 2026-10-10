@@ -156,6 +156,10 @@ flowboxchild:hover { border-color: $faint; }
 flowboxchild:selected, flowboxchild.current { border-color: $accent; }
 flowbox:focus-within flowboxchild:selected { background: $sel; border-color: $sel; }
 .grid { padding: 4px 4px 12px 4px; }
+/* the wallpaper gallery's source link, under its categories */
+.credit { padding: 6px 16px 8px 16px; }
+.credit link { color: $accent; text-decoration: underline; }
+.credit link:hover { color: $fg; }
 """
 
 
