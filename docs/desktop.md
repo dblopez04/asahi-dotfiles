@@ -14,7 +14,7 @@ It's SwayNC, configured in [`.config/swaync/config.json`](../.config/swaync/conf
 
 ## Status bar
 
-Waybar's config is generated from [`.config/wal/templates/waybar-config.jsonc`](../.config/wal/templates/waybar-config.jsonc). Settings → toolbar can show or hide modules (including the optional weather, network speed, and CPU & memory ones), set the weather location, move the bar, change its height, and switch the clock format.
+Waybar's config is generated from [`.config/wal/templates/waybar-config.jsonc`](../.config/wal/templates/waybar-config.jsonc). Settings → toolbar can show or hide modules (including the optional weather, network speed, CPU & memory, and Dexcom ones), set the weather location, move the bar, change its height, and switch the clock format.
 
 | Module | Click | Other |
 | --- | --- | --- |
@@ -31,3 +31,4 @@ Waybar's config is generated from [`.config/wal/templates/waybar-config.jsonc`](
 | Weather (optional) | | Temperature and conditions; the tooltip has a 3-day forecast |
 | Network speed (optional) | | Download and upload speed of the active connection |
 | CPU & memory (optional) | Opens btop | Turns yellow when the CPU is busy |
+| Dexcom glucose (optional) | Refreshes the reading | The latest reading and trend arrow, updated every 5 minutes; the tooltip has its time. Dimmed with the reason when there's no reading. [Setting it up](installation.md#dexcom-glucose) |

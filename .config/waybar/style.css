@@ -85,6 +85,7 @@ tooltip {
 #custom-weather,
 #custom-network-speed,
 #custom-system,
+#custom-dexcom,
 #tray,
 #bluetooth,
 #network,
@@ -114,6 +115,7 @@ tooltip {
 #custom-weather,
 #custom-network-speed,
 #custom-system,
+#custom-dexcom,
 #tray,
 #bluetooth,
 #network,
@@ -126,7 +128,8 @@ tooltip {
 #bluetooth.off,
 #bluetooth.disabled,
 #network.disconnected,
-#custom-tailscale.disconnected {
+#custom-tailscale.disconnected,
+#custom-dexcom.error {
 	opacity: 0.5;
 }
 

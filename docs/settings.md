@@ -14,7 +14,7 @@
 |  | battery | Charge, time left, draw, health, a 24-hour or 10-day history of level, screen-on time and power draw, and the apps using the most energy |
 | personal | appearance | Gaps, borders, focus follows mouse, cursor theme and size, palette style, and regenerating the colors |
 |  | wallpaper | The [wallpaper picker](theming.md#wallpaper-picker)'s grid, local and gallery |
-|  | toolbar | Waybar modules, position, height, and the 12/24-hour clock |
+|  | toolbar | Waybar modules, position, height, the 12/24-hour clock, and setting up [Dexcom glucose](installation.md#dexcom-glucose) |
 |  | notifications | Do not disturb, clearing, and the notification center |
 | system | lock & sleep | Stay awake, when to lock, turn off the display, and sleep, what closing the lid does, plus lock or sleep now |
 |  | date & time | 12/24-hour clock, time zone search, and network time |

@@ -23,6 +23,7 @@ scripts/          Installer, apps, Waybar modules, and helpers (linked into ~/.l
   screenshot.sh, color-picker.sh       Screenshots with markup, and the color picker
   idle.sh, lid.sh, stay-awake.sh       Idle timers, the lid, and stay awake
   usage-sampler.py                     Battery and app usage history
+  dexcom.sh                            Optional Dexcom glucose in the bar (waybar-pydexcom)
   sway-session                         Starts Sway with the session environment
   *-status.*, *-menu.sh, agent-usage.py   Waybar modules and fuzzel menus
 wallpapers/       Bundled wallpapers (gallery downloads land here too)
