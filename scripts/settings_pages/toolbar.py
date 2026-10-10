@@ -6,17 +6,20 @@ from gi.repository import Gtk
 
 import dotconfig
 
-from .common import HOME, Choice, Page, Slider, Toggle, button, label, row, run
+from .common import (HOME, SCRIPTS, Choice, Page, Slider, Toggle, button, in_background, in_terminal, label,
+                     row, run, run_ok)
 
 TEMPLATE = os.path.join(HOME, ".config/wal/templates/waybar-config.jsonc")
 LOCATION_FILE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local/state"), "weather-location")
 RENDERED = os.path.join(HOME, ".cache/wal/waybar-config.jsonc")
+DEXCOM = os.path.join(SCRIPTS, "dexcom.sh")
 RENDER = f"sed 's/{{{{/{{/g; s/}}}}/}}/g' {TEMPLATE} > {RENDERED} && pkill -SIGUSR2 -x waybar"
 MODULES = [
     ("sway/workspaces", "workspaces"), ("custom/now-playing", "now playing"), ("custom/clock", "clock"),
     ("custom/timer", "timers"), ("custom/stay-awake", "stay awake icon"),
     ("custom/notification", "notifications"), ("group/tray-expander", "tray"), ("custom/agents", "coding agents"),
     ("custom/weather", "weather"), ("custom/network-speed", "network speed"), ("custom/system", "cpu & memory"),
+    ("custom/dexcom", "dexcom glucose"),
     ("bluetooth", "bluetooth"), ("network", "wi-fi"), ("custom/tailscale", "tailscale"),
     ("custom/audio", "volume"), ("custom/battery", "battery"),
 ]
@@ -25,7 +28,7 @@ HOMES = {name: section for section, names in (
     ("modules-left", ["sway/workspaces", "sway/mode", "custom/now-playing"]),
     ("modules-center", ["custom/clock", "custom/timer", "custom/stay-awake", "custom/notification"]),
     ("modules-right", ["group/tray-expander", "custom/agents", "custom/weather", "custom/network-speed",
-                       "custom/system", "bluetooth", "network", "custom/tailscale",
+                       "custom/system", "custom/dexcom", "bluetooth", "network", "custom/tailscale",
                        "custom/audio", "custom/battery"])) for name in names}
 ORDER = [name for name, _ in MODULES]
 
@@ -98,6 +101,19 @@ class ToolbarPage(Page):
         self.location.connect("activate", lambda _e: self.save_location())
         self.add(row("location", self.location, button("set", self.save_location),
                      sub=label("a city or zip code", "dim")))
+
+        # optional: waybar-pydexcom, set up here or with install.sh --dexcom
+        self.section("dexcom")
+        self.dexcom_state = label("", "dim")
+        self.dexcom_setup = button("set up", self.setup_dexcom, tooltip="installs waybar-pydexcom (and gnome-keyring)")
+        self.add(row("glucose", self.dexcom_state, self.dexcom_setup,
+                     sub=label("needs Dexcom Share with at least one follower", "dim")))
+        self.dexcom_user = Gtk.Entry(placeholder_text="username", hexpand=True)
+        self.dexcom_password = Gtk.PasswordEntry(placeholder_text="password", show_peek_icon=True, hexpand=True)
+        self.dexcom_password.connect("activate", lambda _e: self.sign_in_dexcom())
+        self.dexcom_login = row("login", self.dexcom_user, self.dexcom_password, button("sign in", self.sign_in_dexcom),
+                                sub=label("kept in the keyring", "dim"))
+        self.add(self.dexcom_login)
         self.note = label("", "dim", "row")
         self.add(self.note)
 
@@ -109,6 +125,38 @@ class ToolbarPage(Page):
         run("pkill", "-f", "sysinfo.py weather")
         self.note.set_label("weather location saved")
 
+    def setup_dexcom(self):
+        # the keyring needs sudo to install and a new login to start unlocked, so this runs in a terminal
+        in_terminal("dexcom setup", "command -v gnome-keyring-daemon >/dev/null || "
+                    "{ sudo dnf install -y gnome-keyring gnome-keyring-pam && "
+                    "echo 'log out and back in to unlock the keyring'; }; "
+                    f"{DEXCOM} install && echo 'then sign in under Settings > toolbar > dexcom'")
+        self.note.set_label("setting up dexcom in a terminal; come back to this page when it's done")
+
+    def sign_in_dexcom(self):
+        user, password = self.dexcom_user.get_text().strip(), self.dexcom_password.get_text()
+        if not user or not password:
+            self.note.set_label("enter your dexcom username and password")
+            return
+        self.note.set_label("signing in to dexcom...")
+        in_background(lambda: run_ok(DEXCOM, "login", input=f"{user}\n{password}\n", timeout=60), self.signed_in_dexcom)
+
+    def signed_in_dexcom(self, result):
+        ok, output = result if isinstance(result, tuple) else (False, str(result))
+        if ok:
+            self.dexcom_password.set_text("")
+        self.note.set_label("dexcom login saved" if ok else output or "couldn't save the dexcom login")
+        self.refresh_dexcom()
+
+    def refresh_dexcom(self):
+        in_background(lambda: run(DEXCOM, "status", timeout=20).strip(), self.show_dexcom)
+
+    def show_dexcom(self, state):
+        self.dexcom_state.set_label({"missing": "not set up", "signed-out": "not signed in",
+                                     "ready": "signed in"}.get(state, "unknown"))
+        self.dexcom_setup.set_visible(state == "missing")
+        self.dexcom_login.set_visible(state != "missing")
+
     def with_config(self, action):
         config = load_config()
         if config is None:
@@ -118,6 +166,7 @@ class ToolbarPage(Page):
         self.panel.update_pending()
 
     def refresh(self):
+        self.refresh_dexcom()
         config = load_config()
         if config is None:
             self.note.set_label("couldn't read the waybar template")

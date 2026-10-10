@@ -36,9 +36,22 @@ bash scripts/install.sh --no-sudo
 
 # Also configure a larger console font for tuigreet.
 bash scripts/install.sh --console-font
+
+# Also set up Dexcom glucose in the bar (see below).
+bash scripts/install.sh --dexcom
 ```
 
 `--no-sudo` still downloads user-level tools, links configs, generates themes, and tries to change the login shell. It is not a dry run. If Stow reports conflicts, move the conflicting files into your backup and run the installer again.
+
+### Dexcom glucose
+
+`--dexcom` adds your current glucose reading and trend to the bar with [waybar-pydexcom](https://github.com/dblopez04/waybar-pydexcom). It needs Dexcom Share turned on with at least one follower. The installer:
+
+- installs `gnome-keyring` and its PAM module. greetd's PAM config already unlocks the keyring when you log in, so the Dexcom login stays encrypted at rest without a separate password prompt.
+- clones waybar-pydexcom into `~/.local/share/waybar-pydexcom` and gives it its own Python venv with `pydexcom` and `keyring`.
+- asks for your Dexcom username and password if the keyring is already running. Otherwise, log out and back in, then sign in under Settings → toolbar → dexcom.
+
+Then turn on **dexcom glucose** in Settings → toolbar. You can also skip the flag and do the whole setup from that page. [`dexcom.sh`](../scripts/dexcom.sh) does the work for both: `install`, `login`, `status`, and `bar`.
 
 ## After installing
 

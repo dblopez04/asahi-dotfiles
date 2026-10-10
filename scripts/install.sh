@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
 # Sets up this sway rice on Fedora Asahi Remix. Safe to re-run.
 #
-# Usage: scripts/install.sh [--no-sudo] [--console-font]   (the checkout can live anywhere)
+# Usage: scripts/install.sh [--no-sudo] [--console-font] [--dexcom]   (the checkout can live anywhere)
 #   --no-sudo       skip everything that needs sudo (packages, system services and tweaks)
 #   --console-font  use a large console font so the tuigreet login screen is readable
+#   --dexcom        add Dexcom glucose to the bar (waybar-pydexcom, with gnome-keyring for the login)
 set -euo pipefail
 
 DOTFILES="$(cd "$(dirname "$0")/.." && pwd)"
 WALLPAPER="$HOME/wallpapers/homer_on_the_trail.jpg"
 USE_SUDO=true
 CONSOLE_FONT=false
+DEXCOM=false
 
 for arg in "$@"; do
     case $arg in
         --no-sudo) USE_SUDO=false ;;
         --console-font) CONSOLE_FONT=true ;;
-        -h|--help) sed -n '2,7p' "$0"; exit 0 ;;
+        --dexcom) DEXCOM=true ;;
+        -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
         *) echo "unknown option: $arg" >&2; exit 1 ;;
     esac
 done
@@ -59,6 +62,8 @@ PACKAGES=(
     # this script
     stow git curl tar xz desktop-file-utils
 )
+# the dexcom module keeps its login in the keyring; greetd's PAM config unlocks it at login once it's installed
+$DEXCOM && PACKAGES+=(gnome-keyring gnome-keyring-pam)
 
 if $USE_SUDO; then
     step "Adding package repositories"
@@ -225,6 +230,15 @@ for script in "$DOTFILES"/scripts/*; do
     ln -sfn "$script" "$HOME/.local/bin/$name"
 done
 
+if $DEXCOM; then
+    step "Setting up Dexcom glucose in the bar"
+    "$DOTFILES/scripts/dexcom.sh" install || echo "couldn't set up dexcom; try again from Settings > toolbar > dexcom"
+    # the keyring only opens once you log in with gnome-keyring installed, so signing in may have to wait
+    if [ -t 0 ] && [ "$("$DOTFILES/scripts/dexcom.sh" status)" = signed-out ]; then
+        "$DOTFILES/scripts/dexcom.sh" login || echo "sign in later from Settings > toolbar > dexcom"
+    fi
+fi
+
 step "Setting feh as the default image viewer"
 python3 "$DOTFILES/scripts/image-defaults.py"
 
@@ -320,5 +334,6 @@ Next:
   - connect to your tailnet: sudo tailscale up
   - add the Pywalfox extension in Firefox, then run: pywalfox update
   - change the wallpaper and theme with Super+P, everything else with Super+,
+  - with --dexcom: sign in under Settings > toolbar > dexcom, then turn on "dexcom glucose" there
     (settings changes stay unsaved until you save them there; old configs go to backups/ in this repo)
 EOF

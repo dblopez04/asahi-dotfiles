@@ -75,6 +75,13 @@
 		"restart-interval": 10,
 		"on-click": "kitty --class btop -e btop"
 	}},
+	"custom/dexcom": {{
+		"exec": "~/.local/bin/dexcom.sh bar",
+		"return-type": "json",
+		"interval": 300,
+		"signal": 16,
+		"on-click": "pkill -RTMIN+16 -x waybar"
+	}},
 	"custom/stay-awake": {{
 		"exec": "~/.local/bin/stay-awake.sh status",
 		"return-type": "json",
