@@ -34,8 +34,8 @@ PACKAGES=(
     xdg-desktop-portal-wlr mate-polkit greetd tuigreet
     # used by keybindings and scripts
     grim slurp grimshot wl-clipboard wtype jq brightnessctl playerctl pavucontrol pulseaudio-utils libnotify
-    # Spotlight's file search, Quick Look's pdf pages, and color emoji for the emoji picker
-    plocate poppler-utils google-noto-color-emoji-fonts
+    # Spotlight's file search, Quick Look's pdf pages, and the emoji picker's emoji (in color), categories and keywords
+    plocate poppler-utils google-noto-color-emoji-fonts unicode-emoji cldr-emoji-annotation
     # screenshot markup
     swappy
     # nmtui, for network setups the wi-fi menus don't cover (certificates, other EAP methods, static IPs)
