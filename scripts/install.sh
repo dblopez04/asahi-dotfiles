@@ -54,7 +54,7 @@ PACKAGES=(
     google-noto-fonts-common google-noto-emoji-fonts
     # theming: pywal and the oomox GTK theme builder
     ImageMagick pipx sassc librsvg2-tools gdk-pixbuf2-devel glib2-devel bc glib2 elementary-icon-theme
-    # walcalc, walwrite (webkitgtk and markdown render its preview), the settings panel and wallpaper picker
+    # walwrite (webkitgtk and markdown render its preview), the settings panel and wallpaper picker
     python3-gobject gtk4 webkitgtk6.0 python3-markdown fwupd
     # this script
     stow git curl tar xz desktop-file-utils
@@ -205,6 +205,8 @@ wal_link colors-waybar.css .config/waybar/colors.css
 wal_link waybar-config.jsonc .config/waybar/config.jsonc
 wal_link colors-waybar.css .config/swayosd/colors.css
 (cd "$DOTFILES" && stow --target="$HOME" --restow .)
+# stow only visits files that still exist, so drop links left behind by launcher entries removed from the repo
+find "$HOME/.local/share/applications" -maxdepth 1 -xtype l -lname '../*/.local/share/applications/*' -delete
 # file manager sidebar bookmarks (GTK needs absolute paths, so they're written here)
 mkdir -p "$HOME/Projects"
 for dir in Downloads Projects; do
@@ -215,6 +217,8 @@ done
 command -v update-desktop-database >/dev/null && update-desktop-database "$HOME/.local/share/applications"
 
 step "Linking scripts into ~/.local/bin"
+# drop links to scripts that were removed from the repo
+find "$HOME/.local/bin" -maxdepth 1 -xtype l -lname "$DOTFILES/scripts/*" -delete
 for script in "$DOTFILES"/scripts/*; do
     name=$(basename "$script")
     case $name in install.sh|__pycache__) continue ;; esac

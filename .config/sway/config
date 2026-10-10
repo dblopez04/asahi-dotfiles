@@ -135,9 +135,7 @@ bindsym $mod+comma exec ~/.local/bin/settings-panel.py
 bindsym $mod+p exec ~/.local/bin/wallpaper-picker.py
 bindsym $mod+j layout toggle split
 bindsym $mod+f exec firefox
-# calculator and Markdown writer, on Omarchy's keys
-bindsym $mod+Ctrl+q exec ~/.local/bin/walcalc
-bindsym XF86Calculator exec ~/.local/bin/walcalc
+# Markdown writer, on Omarchy's key
 bindsym $mod+Shift+w exec ~/.local/bin/walwrite
 bindsym $mod+g fullscreen
 bindsym $mod+Shift+c reload
@@ -230,7 +228,6 @@ for_window [title="^Rename .+"] floating enable
 for_window [app_id="org.kde.ark"] floating enable
 for_window [app_id="org.pulseaudio.pavucontrol"] floating enable, resize set 900 560
 for_window [class="feh"] floating enable, resize set 80 ppt 80 ppt, move position center
-for_window [app_id="walcalc"] floating enable
 # settings and wallpaper picker: movable windows that stay open until closed
 for_window [app_id="^dev\.dotfiles\.(SettingsPanel|WallpaperPicker)$"] floating enable, move position center
 for_window [app_id="^dev\.dotfiles\.QuickLook$"] floating enable, move position center

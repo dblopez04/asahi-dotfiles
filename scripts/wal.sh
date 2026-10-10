@@ -52,8 +52,8 @@ ln -sfn "$HOME/.cache/wal/btopwal.theme" "$HOME/.config/btop/themes/wal.theme"
 # update firefox colors
 command -v pywalfox >/dev/null && pywalfox update >/dev/null 2>&1
 
-# kitty and other terminals get the new colors from wal's escape sequences; walcalc, walwrite,
-# the settings panel and the wallpaper picker watch ~/.cache/wal/colors.json themselves
+# kitty and other terminals get the new colors from wal's escape sequences; walwrite, the
+# settings panel and the wallpaper picker watch ~/.cache/wal/colors.json themselves
 
 if [ -t 1 ]; then
     echo " Colors generated from $img"
