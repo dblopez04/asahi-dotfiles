@@ -109,6 +109,16 @@ gpgkey=https://packages.microsoft.com/keys/microsoft.asc'
         sudo udevadm control --reload
         sudo udevadm trigger --subsystem-match=power_supply
     fi
+
+    step "Letting Bluetooth pairings be saved"
+    # without a desktop Bluetooth agent bluez pairs without bonding, so devices like AirPods forget
+    # this mac after they disconnect (and refuse LibrePods' control channel while connected)
+    conf=/etc/bluetooth/main.conf
+    if ! grep -qx 'AlwaysPairable = true' "$conf"; then
+        # drop any existing (usually commented-out) setting and put ours under [General]
+        sudo sed -i -e '/^#\?\s*AlwaysPairable\s*=/d' -e '/^\[General\]/a AlwaysPairable = true' "$conf"
+        sudo systemctl restart bluetooth
+    fi
 fi
 
 step "Installing BlexMono Nerd Font"
