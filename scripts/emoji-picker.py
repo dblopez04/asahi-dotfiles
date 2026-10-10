@@ -3,7 +3,8 @@
 
 Keys: type to search by name or keyword ("thumbs", "lol", "party"), arrows move, enter picks,
       tab/shift+tab jump between categories, shift+enter (or right-click) picks a skin tone,
-      esc closes (so does clicking away; running it again while it's open closes it too).
+      esc closes. Drag it by any empty spot; it stays open until you pick or press esc (running it
+      again brings it back to the front, or closes it if it's already there).
 
 The pick is typed into the window you were in and also left on the clipboard. The ones you use most
 show first, and emoji with skin tones show the tone you used last. Needs unicode-emoji (the emoji
@@ -50,7 +51,7 @@ FREQUENT_GLYPH = "\uf017"
 
 CSS = """
 window.emoji { background: $bg; }
-window.emoji > .frame { background: $bg; color: $fg; border: 1px solid $border; }
+window.emoji > windowhandle > .frame { background: $bg; color: $fg; border: 1px solid $border; }
 .frame, .frame * { font-family: "BlexMono Nerd Font", monospace; border-radius: 0; box-shadow: none; outline-style: none; }
 entry.query { background: $bg; color: $fg; border: none; border-bottom: 1px solid $faint; font-size: 13pt;
               padding: 10px 14px; min-height: 0; caret-color: $accent; }
@@ -167,14 +168,16 @@ def matches(emoji, terms, query):
     """How well an emoji matches (lower is better), or None."""
     if emoji.name == query:
         return 0
-    if all(term in emoji.words for term in terms):  # whole words: "lol" finds 😂 before lollipop
+    if all(term in emoji.name_words for term in terms):  # "party" finds party popper first
         return 1
-    if emoji.name.startswith(query):
+    if all(term in emoji.words for term in terms):  # whole words: "lol" finds 😂 before lollipop
         return 2
-    if all(any(word.startswith(term) for word in emoji.name_words) for term in terms):
+    if emoji.name.startswith(query):
         return 3
-    if all(any(word.startswith(term) for word in emoji.words) for term in terms):
+    if all(any(word.startswith(term) for word in emoji.name_words) for term in terms):
         return 4
+    if all(any(word.startswith(term) for word in emoji.words) for term in terms):
+        return 5
     return None
 
 
@@ -188,7 +191,6 @@ class Picker(Gtk.ApplicationWindow):
         super().__init__(application=app, title="Emoji", css_classes=["emoji"], decorated=False, resizable=False)
         self.app = app
         self.recent = load_recent()
-        self.was_active = False
         self.rows = []  # the cells shown, row by row, for moving around with the keys
         self.selected = None  # (row, column)
         self.cell_emoji = {}  # cell -> (char, Emoji)
@@ -233,8 +235,7 @@ class Picker(Gtk.ApplicationWindow):
         frame.append(self.scroller)
         frame.append(self.name)
         frame.append(self.tabs)
-        self.set_child(frame)
-        self.connect("notify::is-active", self.focus_changed)
+        self.set_child(Gtk.WindowHandle(child=frame))  # drag the window by anything that isn't a control
         self.select(0, 0)
         self.update_tabs()
 
@@ -491,7 +492,8 @@ class Picker(Gtk.ApplicationWindow):
         cell = self.cell_at(grid, x, y)
         if not cell:
             self.close_tones()
-            return
+            return  # left unclaimed, so a drag from here moves the window
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
         if gesture.get_current_button() == Gdk.BUTTON_SECONDARY:
             self.select(*self.position_of(cell))
             self.open_tones(cell)
@@ -565,12 +567,6 @@ class Picker(Gtk.ApplicationWindow):
         self.destroy()  # gone before typing, so the keys go to the window that was in front
         self.app.quit()
 
-    def focus_changed(self, *_):
-        if self.is_active():
-            self.was_active = True
-        elif self.was_active:
-            self.app.quit()  # clicked away
-
 
 class App(Gtk.Application):
     def __init__(self):
@@ -588,8 +584,10 @@ class App(Gtk.Application):
         args = command_line.get_arguments()[1:]
         if args[:1] in (["-h"], ["--help"]):
             command_line.print_literal(__doc__)
-        elif self.window is not None:
+        elif self.window is not None and self.window.is_active():
             self.quit()
+        elif self.window is not None:
+            self.window.present()
         elif not os.path.exists(EMOJI_TEST):
             subprocess.run(["notify-send", "-a", "Emoji", "Emoji picker needs the emoji list",
                             "sudo dnf install unicode-emoji cldr-emoji-annotation google-noto-color-emoji-fonts"])
