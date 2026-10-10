@@ -54,6 +54,12 @@ window,
     color: @window_fg_color;
 }
 
+/* popovers carry .background too, but only their contents should be painted: the popover's own
+   box includes the shadow margin around the menu, which has to stay see-through */
+popover.background {
+    background-color: transparent;
+}
+
 headerbar {
     background-color: @headerbar_bg_color;
     color: @headerbar_fg_color;
