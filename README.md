@@ -41,6 +41,7 @@ Read the installer and back up your existing configs before you run it. It's saf
   - sets up a PostgreSQL role and database named after you
   - makes greetd the login screen, starting Sway through [`sway-session`](scripts/sway-session)
   - opens LocalSend's ports when firewalld is running
+  - sets BlueZ's `AlwaysPairable` so Bluetooth pairings are saved without a desktop agent (otherwise AirPods forget the laptop)
   - swaps Fn with left Ctrl through `hid_apple`
 
 Installer options:
