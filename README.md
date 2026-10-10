@@ -270,7 +270,7 @@ Screenshots are saved to `~/Screenshots` and copied. Click the notification to m
 
 ## Emoji picker
 
-`Super+Ctrl+Space` opens a grid of emoji by category, like the macOS picker, with the ones you use most on top. Type to search by name or keyword ("thumbs", "lol", "party"), move with the arrows, and press `Enter` (or click): the emoji is typed into the window you were in and copied to the clipboard. `Tab` and `Shift+Tab` jump between categories, the icons along the bottom do the same, and `Shift+Enter` or a right-click picks a skin tone. The grid remembers the tone you used last.
+`Super+Ctrl+Space` opens a grid of emoji by category, like the macOS picker, with the ones you use most on top. Type to search by name or keyword ("thumbs", "lol", "party"), move with the arrows, and press `Enter` (or click): the emoji is typed into the window you were in and copied to the clipboard. `Tab` and `Shift+Tab` jump between categories, the icons along the bottom do the same, and `Shift+Enter` or a right-click picks a skin tone. The grid remembers the tone you used last. Drag the window by any empty spot. It stays open until you pick an emoji or press `Esc`; pressing `Super+Ctrl+Space` again brings it back to the front.
 
 Emoji are drawn with Noto Color Emoji. For Twemoji or OpenMoji instead, install `twitter-twemoji-fonts` or `hfg-gmuend-openmoji-color-fonts` and prefer it in `~/.config/fontconfig/fonts.conf`:
 
