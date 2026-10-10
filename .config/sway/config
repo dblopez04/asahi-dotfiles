@@ -238,6 +238,7 @@ for_window [app_id="^dev\.dotfiles\.Cheatsheet$"] floating enable, border none, 
 # picture-in-picture video: floats in the bottom right corner and follows you across workspaces
 for_window [app_id="^(firefox|org\.mozilla\.firefox)$" title="^Picture-in-Picture$"] floating enable, sticky enable, border none, resize set 480 270, move position 100 ppt 100 ppt, move left 496 px, move up 286 px
 for_window [app_id="^dev\.dotfiles\.Spotlight$"] floating enable, border none, move position center, move up 180 px
+for_window [app_id="^dev\.dotfiles\.EmojiPicker$"] floating enable, border none, move position center
 
 ###########
 ### BAR ###

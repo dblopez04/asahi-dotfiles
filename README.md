@@ -269,7 +269,19 @@ Screenshots are saved to `~/Screenshots` and copied. Click the notification to m
 
 ## Emoji picker
 
-`Super+Ctrl+Space` lists emoji in fuzzel. Type part of a name ("thumbs", "fire", "party") and press `Enter`: the emoji is typed into the window you were in and copied to the clipboard. The ones you use most come first.
+`Super+Ctrl+Space` opens a grid of emoji by category, like the macOS picker, with the ones you use most on top. Type to search by name or keyword ("thumbs", "lol", "party"), move with the arrows, and press `Enter` (or click): the emoji is typed into the window you were in and copied to the clipboard. `Tab` and `Shift+Tab` jump between categories, the icons along the bottom do the same, and `Shift+Enter` or a right-click picks a skin tone. The grid remembers the tone you used last.
+
+Emoji are drawn with Noto Color Emoji. For Twemoji or OpenMoji instead, install `twitter-twemoji-fonts` or `hfg-gmuend-openmoji-color-fonts` and prefer it in `~/.config/fontconfig/fonts.conf`:
+
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<fontconfig>
+  <alias binding="same"><family>emoji</family><prefer><family>Twemoji</family></prefer></alias>
+</fontconfig>
+```
+
+Emoji the font can't draw (Twemoji stops at Unicode 14) are left out of the picker.
 
 ## Clipboard history
 
@@ -378,4 +390,5 @@ GNU Stow links the configuration into your home directory. The links to pywal's 
 - **A setting looks wrong after a change:** review or discard it in the bar at the bottom of Settings, or restore an earlier config from Settings → backups.
 - **Walwrite's preview is plain:** install `webkitgtk6.0` and `python3-markdown` (the installer does), then reopen Walwrite.
 - **No color in the emoji picker, or PDFs don't preview:** install `google-noto-color-emoji-fonts` and `poppler-utils` (the installer does).
+- **The emoji picker says it needs the emoji list:** install `unicode-emoji` and `cldr-emoji-annotation` (the installer does).
 - **Battery apps list is empty:** check that the sampler is running with `systemctl --user status usage-sampler`. The list fills in after it has run for a while on battery.
