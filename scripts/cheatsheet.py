@@ -35,7 +35,6 @@ RULES = [
     (r"color-picker\.sh", "apps & tools", "pick a color on screen"),
     (r"cheatsheet\.py", "apps & tools", "this cheat sheet"),
     (r"walwrite", "apps & tools", "walwrite"),
-    (r"walcalc", "apps & tools", "calculator"),
     (r"\$menu|fuzzel", "apps & tools", "app launcher"),
     (r"\$terminal|kitty", "apps & tools", "terminal"),
     (r"\$fileManager|nautilus", "apps & tools", "file manager"),
